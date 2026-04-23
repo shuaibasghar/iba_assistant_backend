@@ -1,0 +1,42 @@
+
+
+crewai
+crewai-tools
+langchain
+langchain_community
+numpy
+pandas
+ipython
+# FastAPI and web framework dependencies
+fastapi
+requests
+uvicorn[standard]
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+python-dotenv
+
+# Database dependencies
+sqlalchemy
+alembic
+psycopg2-binary
+pymongo>=4.0.0
+
+boto3
+Pillow
+
+emails
+
+pydantic
+pydantic-settings
+email-validator
+markdown>=3.4.0
+
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# YAML support
+PyYAML
+
+# Async MongoDB
+motor>=3.3.1

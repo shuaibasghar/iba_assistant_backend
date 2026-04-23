@@ -1,7 +1,9 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from utils.db import mongodb_connector
 from config import get_settings
+from routers.chat import router as chat_router
 
 
 @asynccontextmanager
@@ -19,11 +21,41 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="University Data Analysis API",
-    description="AI-powered chatbot for university student queries",
+    title="IBA Sukkur University Portal API",
+    description="""
+    AI-powered chatbot for university student queries.
+    
+    ## Features
+    - Multi-agent system powered by CrewAI
+    - Conversation memory with LangChain
+    - Session management with Redis
+    - Semantic search with ChromaDB
+    
+    ## Supported Queries
+    - Assignment status, due dates, submissions
+    - Fee status, payment history
+    - Exam schedules, venues
+    - Academic grades, CGPA
+    - Document requests
+    
+    ## Languages
+    Supports English and Roman Urdu (e.g., "meri fees ka status batao")
+    """,
     version="1.0.0",
     lifespan=lifespan
 )
+
+# CORS middleware for frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(chat_router)
 
 
 @app.get("/")

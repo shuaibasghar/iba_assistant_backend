@@ -1,0 +1,143 @@
+# ═══════════════════════════════════════════════════════════════════
+# IBA Sukkur University Portal - Task Definitions
+# ═══════════════════════════════════════════════════════════════════
+
+route_query_task:
+  description: >
+    Analyze the student's query: "{query}"
+    
+    Student Info:
+    - Name: {student_name}
+    - Roll Number: {roll_number}
+    - Semester: {semester}
+    - Department: {department}
+    
+    Determine the intent and classify into one of these categories:
+    1. ASSIGNMENT - queries about assignments, submissions, due dates, marks
+    2. FEE - queries about fees, payment, dues, challan
+    3. EXAM - queries about exam schedule, dates, venues, papers
+    4. GRADE - queries about results, marks, CGPA, academic performance
+    5. DOCUMENT - requests for transcripts, certificates, documents
+    6. GENERAL - general queries, greetings, or unclear intent
+    
+    Consider Roman Urdu patterns like:
+    - "assignment pending hai" → ASSIGNMENT
+    - "fees status batao" → FEE
+    - "exam kab hai" → EXAM
+    - "result batao" → GRADE
+    - "transcript chahiye" → DOCUMENT
+  expected_output: >
+    A JSON object with:
+    - intent: The category (ASSIGNMENT/FEE/EXAM/GRADE/DOCUMENT/GENERAL)
+    - confidence: Confidence score 0-1
+    - extracted_entities: Any specific entities (course name, semester, etc.)
+    - response_hint: Brief hint for the specialist agent
+  agent: router_agent
+
+fetch_assignments_task:
+  description: >
+    Fetch assignment information for student {student_name} ({roll_number}).
+    
+    Query: "{query}"
+    Semester: {semester}
+    
+    Retrieve:
+    - Pending assignments with due dates
+    - Overdue/not submitted assignments
+    - Submitted assignments with marks
+    - Upcoming assignments
+    
+    Format the response in a friendly, easy-to-read manner.
+  expected_output: >
+    A natural language response listing the student's assignments with:
+    - Assignment name and course
+    - Due date and status (pending/submitted/overdue)
+    - Marks if submitted
+    Respond in the same language style as the query (English or Roman Urdu mix).
+  agent: assignment_agent
+
+check_fee_status_task:
+  description: >
+    Check fee status for student {student_name} ({roll_number}).
+    
+    Query: "{query}"
+    Semester: {semester}
+    
+    Retrieve:
+    - Current semester fee status (paid/unpaid/partial)
+    - Amount due and amount paid
+    - Payment history
+    - Due date for pending fees
+    
+    If student asks for documents but has unpaid fees, inform them politely.
+  expected_output: >
+    A friendly response with:
+    - Current fee status
+    - Any pending amount
+    - Payment deadline if applicable
+    - Reminder to pay if unpaid
+  agent: fee_agent
+
+get_exam_schedule_task:
+  description: >
+    Get exam schedule for student {student_name} ({roll_number}).
+    
+    Query: "{query}"
+    Semester: {semester}
+    Department: {department}
+    
+    Retrieve:
+    - Upcoming mid/final exams
+    - Exam dates and times
+    - Venues
+    - Which paper is first
+    
+    Sort by date to show nearest exam first.
+  expected_output: >
+    A clear exam schedule showing:
+    - Course name and exam type (mid/final)
+    - Date and time
+    - Venue/Hall
+    - Days remaining until exam
+    Highlight which exam is coming first.
+  agent: exam_agent
+
+fetch_grades_task:
+  description: >
+    Fetch academic grades for student {student_name} ({roll_number}).
+    
+    Query: "{query}"
+    
+    Based on the query, retrieve:
+    - Specific semester grades if mentioned
+    - Specific course grades if mentioned
+    - Overall CGPA
+    - Grade breakdown (mid, final, total)
+  expected_output: >
+    Academic performance summary with:
+    - Grades per course (letter grade and marks)
+    - Semester GPA
+    - Cumulative CGPA
+    - Encouraging message based on performance
+  agent: grade_agent
+
+process_document_request_task:
+  description: >
+    Process document request for student {student_name} ({roll_number}).
+    
+    Query: "{query}"
+    
+    IMPORTANT: Before processing, check fee status.
+    If fees are unpaid:
+    - Do NOT provide the document
+    - Inform student to clear dues first
+    
+    If fees are paid:
+    - Confirm document type requested
+    - Provide information on how to get it
+  expected_output: >
+    Either:
+    1. Confirmation that document can be processed (if fees clear)
+    2. Polite message that fees must be cleared first (if fees pending)
+    Include next steps for the student.
+  agent: document_agent

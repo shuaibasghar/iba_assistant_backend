@@ -4,6 +4,10 @@ crewai
 crewai-tools
 langchain
 langchain_community
+redis
+chromadb
+langchain-chroma
+langchain-openai
 numpy
 pandas
 ipython

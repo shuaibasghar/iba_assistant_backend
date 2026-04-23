@@ -4,7 +4,7 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     mongodb_url: str = "mongodb://localhost:27017"
-    mongodb_database: str = "university_db"
+    mongodb_database: str = "iba_suk_portal"
     
     class Config:
         env_file = ".env"

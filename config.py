@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
     session_ttl_seconds: int = 1800  # 30 minutes
     
+    # Optional: if set, POST /database/credentials/apply accepts header X-Setup-Token
+    # with this value (use for first-time setup when no admin session exists)
+    database_setup_token: str = ""
+    
     # ChromaDB Configuration
     chroma_persist_directory: str = "./chroma_db"
     chroma_collection_name: str = "university_docs"
@@ -22,6 +26,12 @@ class Settings(BaseSettings):
     # LangChain Configuration
     langchain_verbose: bool = True
     max_chat_history: int = 10  # Keep last N messages in context
+    
+    # JWT Authentication Configuration
+    jwt_secret_key: str = "your-super-secret-key-change-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 30
+    jwt_refresh_token_expire_days: int = 7
     
     class Config:
         env_file = ".env"

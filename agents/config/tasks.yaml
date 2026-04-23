@@ -34,6 +34,36 @@ route_query_task:
     - response_hint: Brief hint for the specialist agent
   agent: router_agent
 
+# Used when intent is already GENERAL — must read like a human chat, not JSON
+general_conversation_task:
+  description: >
+    The student wrote: "{query}"
+    
+    Student: {student_name} | Roll: {roll_number} | Semester: {semester} | Dept: {department}
+    
+    Recent conversation context (if any):
+    {conversation_history}
+    
+    Respond as a warm, helpful IBA Sukkur assistant.
+    Greeting rules (very important — product policy):
+    - Do NOT use "Wa alaikum assalam", "Walaikum assalam", "Walekum salam", or any
+      Islamic salam/response phrase in your reply, even if the student greets
+      with salam. Use neutral, inclusive wording only.
+    - Preferred opens: "Hello {name}!", "Hi {name},", "Khush amdeed!", "Welcome
+      back to the portal", "Good to see you" — then one line offering help
+      (fees, assignments, exams, grades, documents).
+    - If they only greet (salam, hi, walekum salam, assalam, etc.), mirror warmth
+      without religious phrases. Match English / Roman Urdu / mixed as they used.
+    - Do NOT output JSON, YAML, bullet metadata, or "intent/confidence" fields.
+    - Do NOT describe your internal analysis—only speak to the student.
+    - If their request is unclear, invite them to ask about fees, assignments,
+      exams, grades, or documents in one short paragraph.
+    You may use tools to fetch basic student_info if it helps personalize.
+  expected_output: >
+    Plain natural language only: 2–6 short sentences the student sees in the
+    chat bubble. No code blocks, no structured data, no routing labels.
+  agent: general_assistant
+
 fetch_assignments_task:
   description: >
     Fetch assignment information for student {student_name} ({roll_number}).

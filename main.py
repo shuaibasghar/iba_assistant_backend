@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 from utils.db import mongodb_connector
 from config import get_settings
 from routers.chat import router as chat_router
+from routers.auth import router as auth_router
+from routers.database_config import router as database_config_router
 
 
 @asynccontextmanager
@@ -23,13 +25,31 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="IBA Sukkur University Portal API",
     description="""
-    AI-powered chatbot for university student queries.
+    AI-powered chatbot for university student and teacher queries.
+    
+    ## Authentication
+    This API uses **JWT (JSON Web Token)** authentication with role-based access control.
+    
+    ### Roles
+    - **Student**: Access to personal academic data (assignments, fees, grades, exams)
+    - **Teacher**: Access to course management, student grades, attendance
+    - **Admin**: Full system access
+    
+    ### How to Authenticate
+    1. Call `POST /auth/login` with email and password
+    2. Use the returned `access_token` in the Authorization header: `Bearer <token>`
+    3. Token expires in 30 minutes - use `POST /auth/refresh` to get a new one
+    4. Call `POST /auth/logout` to invalidate the token
+    
+    ### Demo Credentials
+    Use any student/teacher email from the database with password: `password123`
     
     ## Features
     - Multi-agent system powered by CrewAI
     - Conversation memory with LangChain
     - Session management with Redis
     - Semantic search with ChromaDB
+    - Role-based access control
     
     ## Supported Queries
     - Assignment status, due dates, submissions
@@ -42,7 +62,8 @@ app = FastAPI(
     Supports English and Roman Urdu (e.g., "meri fees ka status batao")
     """,
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    swagger_ui_parameters={"persistAuthorization": True}
 )
 
 # CORS middleware for frontend
@@ -55,6 +76,8 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(auth_router)
+app.include_router(database_config_router)
 app.include_router(chat_router)
 
 

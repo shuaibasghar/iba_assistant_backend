@@ -40,7 +40,15 @@ class MongoDBConnector:
         """Close the database connection."""
         if self.async_client:
             self.async_client.close()
+            self.async_client = None
+            self.database = None
+            self.db_name = None
             print("MongoDB connection closed")
+    
+    async def reconnect(self, connection_string: str, database_name: str) -> None:
+        """Disconnect and connect with new credentials (runtime reconfiguration)."""
+        await self.disconnect()
+        await self.connect(connection_string, database_name)
     
     def disconnect_sync(self) -> None:
         """Close the sync database connection."""

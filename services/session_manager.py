@@ -207,6 +207,22 @@ class SessionManager:
     def is_session_valid(self, session_id: str) -> bool:
         """Check if session exists and is valid."""
         return self.get_session(session_id) is not None
+    
+    def reconfigure_connections(
+        self,
+        mongodb_url: str,
+        mongodb_database: str,
+        redis_url: str | None = None,
+    ) -> None:
+        """Recreate MongoDB and optionally Redis clients after settings change."""
+        self.settings = get_settings()
+        if self.mongo_client:
+            self.mongo_client.close()
+        self.mongo_client = MongoClient(mongodb_url)
+        self.db = self.mongo_client[mongodb_database]
+        if redis_url:
+            self.redis_client = redis.from_url(redis_url, decode_responses=True)
+        self.ttl = self.settings.session_ttl_seconds
 
 
 # Singleton instance

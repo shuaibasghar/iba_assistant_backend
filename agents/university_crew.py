@@ -133,7 +133,7 @@ class AgentFactory:
         "EXAM": "exam_agent",
         "GRADE": "grade_agent",
         "DOCUMENT": "document_agent",
-        "GENERAL": "router_agent",
+        "GENERAL": "general_assistant",
     }
     
     # Maps intent to task config key
@@ -143,7 +143,7 @@ class AgentFactory:
         "EXAM": "get_exam_schedule_task",
         "GRADE": "fetch_grades_task",
         "DOCUMENT": "process_document_request_task",
-        "GENERAL": "route_query_task",
+        "GENERAL": "general_conversation_task",
     }
     
     @classmethod
@@ -234,7 +234,7 @@ class TaskFactory:
         task_config = config[task_key]
         
         # Inject dynamic context into description
-        description = task_config["description"].format(
+        format_args = dict(
             query=query,
             student_name=student_context.get("student_name", "Unknown"),
             student_id=student_context.get("student_id", ""),
@@ -242,6 +242,11 @@ class TaskFactory:
             semester=student_context.get("semester", "Unknown"),
             department=student_context.get("department", "Unknown"),
         )
+        if task_key == "general_conversation_task":
+            format_args["conversation_history"] = student_context.get(
+                "conversation_history", "No previous messages."
+            )
+        description = task_config["description"].format(**format_args)
         
         return Task(
             description=description,

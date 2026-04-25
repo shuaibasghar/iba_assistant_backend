@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from fastapi import APIRouter, HTTPException, Query, Request, BackgroundTasks
+from fastapi.responses import PlainTextResponse
 
 from config import get_settings
 from services.whatsapp_service import (
@@ -56,15 +57,29 @@ async def verify_webhook(
       - hub.verify_token = the token you set in Meta dashboard
       - hub.challenge = a random string
 
-    We must return hub.challenge as plain text if the verify token matches.
+    We must return hub.challenge as **plain text** (Content-Type: text/plain).
+    A JSON/integer response can cause Meta to fail even when the token matches.
     """
     settings = get_settings()
+    # Strip: .env lines often include a trailing newline, which would break a plain compare
+    expect = (settings.whatsapp_verify_token or "").strip()
+    got = (hub_verify_token or "").strip()
 
-    if hub_mode == "subscribe" and hub_verify_token == settings.whatsapp_verify_token:
-        log.info("✅ WhatsApp webhook verified successfully")
-        return int(hub_challenge) if hub_challenge and hub_challenge.isdigit() else hub_challenge
+    if hub_mode == "subscribe" and got == expect and expect:
+        challenge = (hub_challenge or "").strip()
+        if not challenge:
+            log.warning("WhatsApp verify: mode OK and token OK but missing hub.challenge")
+            raise HTTPException(status_code=400, detail="Missing hub.challenge")
+        log.info("WhatsApp webhook verified (challenge length=%d)", len(challenge))
+        return PlainTextResponse(content=challenge, status_code=200)
 
-    log.warning("❌ WhatsApp webhook verification failed: mode=%s token=%s", hub_mode, hub_verify_token)
+    log.warning(
+        "WhatsApp webhook verification failed: mode=%r len(got)=%d len(expect)=%d match=%s",
+        hub_mode,
+        len(got),
+        len(expect),
+        got == expect,
+    )
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
@@ -219,7 +234,8 @@ async def whatsapp_status():
         "phone_number_id": settings.whatsapp_phone_number_id if configured else "not set",
         "api_version": settings.whatsapp_api_version,
         "active_sessions": len(_phone_sessions),
-        "webhook_url": "/whatsapp/webhook",
+        "webhook_path": "/whatsapp/webhook",
+        "verify_token_set": bool((settings.whatsapp_verify_token or "").strip()),
         "message": "WhatsApp integration is ready" if configured else (
             "WhatsApp not configured. Set WHATSAPP_API_TOKEN and "
             "WHATSAPP_PHONE_NUMBER_ID in .env"

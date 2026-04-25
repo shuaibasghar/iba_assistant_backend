@@ -1,7 +1,10 @@
+import asyncio
+import logging
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo import MongoClient
 from typing import Any
-import asyncio
+
+log = logging.getLogger(__name__)
 
 
 class MongoDBConnector:
@@ -15,16 +18,27 @@ class MongoDBConnector:
         self.sync_client: MongoClient | None = None
         self.database: AsyncIOMotorDatabase | None = None
         self.db_name: str | None = None
+
+    @property
+    def is_motor_connected(self) -> bool:
+        """True if the async (Motor) client used by /schema, /collections, etc. is open."""
+        return self.database is not None
     
     async def connect(self, connection_string: str, database_name: str) -> None:
         """Establish async connection to MongoDB."""
-        self.async_client = AsyncIOMotorClient(connection_string)
+        self.async_client = AsyncIOMotorClient(
+            connection_string,
+            serverSelectionTimeoutMS=15_000,
+            connectTimeoutMS=15_000,
+            socketTimeoutMS=15_000,
+        )
         self.database = self.async_client[database_name]
         self.db_name = database_name
-        
-        # Verify connection
-        await self.async_client.admin.command('ping')
-        print(f"Connected to MongoDB database: {database_name}")
+
+        await self.async_client.admin.command("ping")
+        # Access the target DB (MongoDB creates it on first use; this also validates name/limits)
+        await self.database.list_collection_names()
+        log.info("MongoDB (Motor) ready: database=%s", database_name)
     
     def connect_sync(self, connection_string: str, database_name: str) -> None:
         """Establish sync connection to MongoDB."""
@@ -34,7 +48,7 @@ class MongoDBConnector:
         
         # Verify connection
         self.sync_client.admin.command('ping')
-        print(f"Connected to MongoDB database: {database_name}")
+        log.debug("Sync client connected to MongoDB database: %s", database_name)
     
     async def disconnect(self) -> None:
         """Close the database connection."""
@@ -43,7 +57,7 @@ class MongoDBConnector:
             self.async_client = None
             self.database = None
             self.db_name = None
-            print("MongoDB connection closed")
+            log.debug("Motor MongoDB connection closed")
     
     async def reconnect(self, connection_string: str, database_name: str) -> None:
         """Disconnect and connect with new credentials (runtime reconfiguration)."""
@@ -54,7 +68,7 @@ class MongoDBConnector:
         """Close the sync database connection."""
         if self.sync_client:
             self.sync_client.close()
-            print("MongoDB connection closed")
+            log.debug("Sync MongoDB client closed")
     
     async def list_collections(self) -> list[str]:
         """Get all collection names in the database."""

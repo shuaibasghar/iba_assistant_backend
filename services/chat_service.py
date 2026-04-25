@@ -19,7 +19,9 @@ from langchain_core.output_parsers import StrOutputParser
 from config import get_settings
 from .session_manager import SessionManager, StudentSession, get_session_manager
 from .conversation_manager import ConversationManager, ConversationManagerFactory
-from agents.university_crew import UniversityCrewFactory, AgentFactory
+from agents.university_crew import UniversityCrewFactory, _CREW_ROUTE_INTENTS
+from utils.query_scope import detect_assignment_reply_scope, detect_grade_reply_scope
+from utils.permissions import check_user_permission
 
 
 @dataclass
@@ -49,7 +51,8 @@ class IntentClassifier:
     Faster than using full CrewAI for simple classification.
     """
     
-    INTENTS = ["ASSIGNMENT", "FEE", "EXAM", "GRADE", "DOCUMENT", "GENERAL"]
+    # Order: route intents first (same as crew router), GENERAL last.
+    INTENTS = list(_CREW_ROUTE_INTENTS) + ["GENERAL"]
     
     def __init__(self):
         settings = get_settings()
@@ -63,18 +66,26 @@ class IntentClassifier:
         )
         
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an intent classifier for a university student portal.
-Classify the student's query into ONE of these categories:
-- ASSIGNMENT: Questions about assignments, homework, submissions, due dates
-- FEE: Questions about fees, payment, dues, challan
-- EXAM: Questions about exams, schedule, papers, dates, venues
-- GRADE: Questions about grades, marks, results, CGPA, GPA
-- DOCUMENT: Requests for documents, transcripts, certificates
-- GENERAL: Greetings, general questions, unclear intent
+            ("system", """You are an intent classifier for a university portal (students and faculty).
+Classify the user's query into ONE of these categories:
+- ASSIGNMENT: Assignments, homework, submissions, due dates
+- FEE: Fees, payment, dues, challan
+- EXAM: Exams, schedule, papers, dates, venues, admit card, hall ticket
+- GRADE: Grades, marks, results, CGPA, GPA
+- DOCUMENT: Transcripts, enrollment certificates, official document status
+- ATTENDANCE: Class attendance, shortage, percentage, 75% rule
+- TIMETABLE: Class schedule, time table, room, which class when
+- LIBRARY: Library books, due dates, fines, returns
+- SCHOLARSHIP: Scholarships, financial aid, stipend, disbursement
+- HOSTEL: Hostel room, warden, hostel fee, accommodation
+- COMPLAINT: Complaints, support tickets, grievances
+- ANNOUNCEMENT: Campus notices, circulars, news, alerts
+- EMAIL: Sending an email, forwarding to an address, Gmail/mail requests
+- GENERAL: Greetings, small talk, unclear intent
 
 Respond with ONLY the category name, nothing else.
 
-Student is: {student_name} (Semester {semester}, {department})
+User is: {student_name} | Role: {user_role} | Semester: {semester} | Dept: {department}
 Recent conversation:
 {conversation_history}
 """),
@@ -94,6 +105,7 @@ Recent conversation:
             result = self.chain.invoke({
                 "query": query,
                 "student_name": student_context.get("student_name", "Student"),
+                "user_role": student_context.get("user_role", "student"),
                 "semester": student_context.get("semester", "Unknown"),
                 "department": student_context.get("department", "Unknown"),
                 "conversation_history": conversation_history or "No previous conversation."
@@ -142,17 +154,18 @@ class ChatService:
         student_id: str = None,
         roll_number: str = None,
         email: str = None,
-        tenant_id: str = "default"
+        tenant_id: str = "default",
+        hint_role: str | None = None,
     ) -> Optional[StudentSession]:
         """
-        Start a new chat session for a student.
-        Returns session object or None if student not found.
+        Start a new chat session. Pass hint_role matching JWT role (student | teacher | admin).
         """
         session = self.session_manager.create_session(
             student_id=student_id,
             roll_number=roll_number,
             email=email,
-            tenant_id=tenant_id
+            tenant_id=tenant_id,
+            hint_role=hint_role,
         )
         
         if session:
@@ -211,20 +224,49 @@ class ChatService:
         )
         conversation_history = conv_manager.get_conversation_context()
         student_context = session.get_context()
-        
-        # 3. Classify intent using LangChain
-        intent = self.intent_classifier.classify(
-            query=message,
-            student_context=student_context,
-            conversation_history=conversation_history
-        )
+
+        # 2.5 Permission layer: deny sensitive requests immediately
+        permission_denial = check_user_permission(message, student_context.get("user_role", "student"))
+        if permission_denial:
+            response_text = permission_denial
+            intent = "DENIED"
+            conv_manager.add_exchange(message, response_text)
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            return ChatResponse(
+                session_id=session_id,
+                message=response_text,
+                intent=intent,
+                student_name=session.student_name,
+                timestamp=datetime.now().isoformat(),
+                processing_time_ms=processing_time
+            )
+
+        # 3. Intent: role-specific crew (faculty/admin) vs classifier for students
+        ur = student_context.get("user_role", "student")
+        if ur == "teacher":
+            intent = "TEACHER"
+        elif ur == "admin":
+            intent = "ADMIN"
+        else:
+            intent = self.intent_classifier.classify(
+                query=message,
+                student_context=student_context,
+                conversation_history=conversation_history
+            )
+
+        # Narrow reply scope (assignments / grades) — injected into Crew task text so the model obeys it
+        crew_context = dict(student_context)
+        if intent == "ASSIGNMENT":
+            crew_context["assignment_reply_scope"] = detect_assignment_reply_scope(message)
+        elif intent == "GRADE":
+            crew_context["grade_reply_scope"] = detect_grade_reply_scope(message)
         
         # 4. Execute with CrewAI
         try:
             response_text = self._execute_with_crewai(
                 intent=intent,
                 query=message,
-                student_context=student_context,
+                student_context=crew_context,
                 conversation_history=conversation_history,
                 tenant_id=session.tenant_id
             )

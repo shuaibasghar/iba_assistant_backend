@@ -3,171 +3,481 @@
 # ═══════════════════════════════════════════════════════════════════
 
 route_query_task:
-  description: >
-    Analyze the student's query: "{query}"
-    
-    Student Info:
-    - Name: {student_name}
-    - Roll Number: {roll_number}
-    - Semester: {semester}
-    - Department: {department}
-    
-    Determine the intent and classify into one of these categories:
-    1. ASSIGNMENT - queries about assignments, submissions, due dates, marks
-    2. FEE - queries about fees, payment, dues, challan
-    3. EXAM - queries about exam schedule, dates, venues, papers
-    4. GRADE - queries about results, marks, CGPA, academic performance
-    5. DOCUMENT - requests for transcripts, certificates, documents
-    6. GENERAL - general queries, greetings, or unclear intent
-    
-    Consider Roman Urdu patterns like:
-    - "assignment pending hai" → ASSIGNMENT
-    - "fees status batao" → FEE
-    - "exam kab hai" → EXAM
-    - "result batao" → GRADE
-    - "transcript chahiye" → DOCUMENT
-  expected_output: >
-    A JSON object with:
-    - intent: The category (ASSIGNMENT/FEE/EXAM/GRADE/DOCUMENT/GENERAL)
-    - confidence: Confidence score 0-1
-    - extracted_entities: Any specific entities (course name, semester, etc.)
-    - response_hint: Brief hint for the specialist agent
-  agent: router_agent
+    description: >
+        Analyze the student's query: "{query}"
+
+        Student Info:
+        - Name: {student_name}
+        - Roll Number: {roll_number}
+        - Semester: {semester}
+        - Department: {department}
+
+        Determine the intent and classify into one of these categories:
+        1. ASSIGNMENT - assignments, submissions, due dates, homework
+        2. FEE - fees, payment, dues, challan
+        3. EXAM - exam schedule, dates, venues, papers, hall ticket, admit card, roll number slip
+        4. GRADE - results, marks, CGPA, GPA, academic performance
+        5. DOCUMENT - transcripts, enrollment certificates, official document status
+        6. ATTENDANCE - class attendance, shortage, percentage, 75% rule
+        7. TIMETABLE - class schedule, time table, which class when, room
+        8. LIBRARY - books issued, due date, fine, return
+        9. SCHOLARSHIP - scholarship, financial aid, stipend, disbursement
+        10. HOSTEL - hostel room, warden, hostel fee, accommodation
+        11. COMPLAINT - complaint, ticket, support request, grievance
+        12. ANNOUNCEMENT - campus notice, circular, news, urgent alert
+        13. EMAIL - send an email, mail to, Gmail, forward this to my email
+        14. GENERAL - greetings, small talk, or unclear intent
+
+        Consider Roman Urdu patterns like:
+        - "assignment pending hai" → ASSIGNMENT
+        - "fees status batao" → FEE
+        - "exam kab hai" / "admit card" → EXAM
+        - "result batao" → GRADE
+        - "transcript chahiye" → DOCUMENT
+        - "attendance kitni hai" → ATTENDANCE
+        - "time table" → TIMETABLE
+        - "email bhejo" / "mail karo" → EMAIL
+    expected_output: >
+        A JSON object with:
+        - intent: The category (one of the 14 above, or GENERAL)
+        - confidence: Confidence score 0-1
+        - extracted_entities: Any specific entities (course name, semester, etc.)
+        - response_hint: Brief hint for the specialist agent
+    agent: router_agent
 
 # Used when intent is already GENERAL — must read like a human chat, not JSON
 general_conversation_task:
-  description: >
-    The student wrote: "{query}"
-    
-    Student: {student_name} | Roll: {roll_number} | Semester: {semester} | Dept: {department}
-    
-    Recent conversation context (if any):
-    {conversation_history}
-    
-    Respond as a warm, helpful IBA Sukkur assistant.
-    Greeting rules (very important — product policy):
-    - Do NOT use "Wa alaikum assalam", "Walaikum assalam", "Walekum salam", or any
-      Islamic salam/response phrase in your reply, even if the student greets
-      with salam. Use neutral, inclusive wording only.
-    - Preferred opens: "Hello {name}!", "Hi {name},", "Khush amdeed!", "Welcome
-      back to the portal", "Good to see you" — then one line offering help
-      (fees, assignments, exams, grades, documents).
-    - If they only greet (salam, hi, walekum salam, assalam, etc.), mirror warmth
-      without religious phrases. Match English / Roman Urdu / mixed as they used.
-    - Do NOT output JSON, YAML, bullet metadata, or "intent/confidence" fields.
-    - Do NOT describe your internal analysis—only speak to the student.
-    - If their request is unclear, invite them to ask about fees, assignments,
-      exams, grades, or documents in one short paragraph.
-    You may use tools to fetch basic student_info if it helps personalize.
-  expected_output: >
-    Plain natural language only: 2–6 short sentences the student sees in the
-    chat bubble. No code blocks, no structured data, no routing labels.
-  agent: general_assistant
+    description: >
+        The student wrote: "{query}"
+
+        Student: {student_name} | Roll: {roll_number} | Semester: {semester} | Dept: {department}
+
+        Recent conversation context (if any):
+        {conversation_history}
+
+        Respond as a warm, helpful IBA Sukkur assistant.
+        Greeting rules (very important — product policy):
+        - Do NOT use "Wa alaikum assalam", "Walaikum assalam", "Walekum salam", or any
+          Islamic salam/response phrase in your reply, even if the student greets
+          with salam. Use neutral, inclusive wording only.
+        - Preferred opens: "Hello {student_name}!", "Hi {student_name},", "Khush amdeed!", "Welcome
+          back to the portal", "Good to see you" — then one line offering help
+          (fees, assignments, exams, grades, documents, attendance, timetable,
+          library, scholarships, hostel, complaints, announcements).
+        - If they only greet (salam, hi, walekum salam, assalam, etc.), mirror warmth
+          without religious phrases. Match English / Roman Urdu / mixed as they used.
+        - Do NOT output JSON, YAML, bullet metadata, or "intent/confidence" fields.
+        - Do NOT describe your internal analysis—only speak to the student.
+        - If their request is unclear, invite them to ask about fees, assignments,
+          exams, grades, documents, attendance, timetable, or other portal topics
+          in one short paragraph.
+
+        **CLARIFYING QUESTIONS - IF REQUEST IS UNCLEAR:**
+        If they ask vague questions unrelated to specific portal features, respond warmly
+        and suggest relevant portal topics they can ask about:
+        "You can ask me about fees, assignments, exams, grades, documents, attendance,
+        timetable, library, scholarships, hostel, complaints, or announcements. What can I help?"
+
+        You may use tools to fetch basic student_info if it helps personalize.
+    expected_output: >
+        Plain natural language only: 2–6 short sentences the student sees in the
+        chat bubble. If unclear, suggest portal topics they can ask about.
+    agent: general_assistant
 
 fetch_assignments_task:
-  description: >
-    Fetch assignment information for student {student_name} ({roll_number}).
-    
-    Query: "{query}"
-    Semester: {semester}
-    
-    Retrieve:
-    - Pending assignments with due dates
-    - Overdue/not submitted assignments
-    - Submitted assignments with marks
-    - Upcoming assignments
-    
-    Format the response in a friendly, easy-to-read manner.
-  expected_output: >
-    A natural language response listing the student's assignments with:
-    - Assignment name and course
-    - Due date and status (pending/submitted/overdue)
-    - Marks if submitted
-    Respond in the same language style as the query (English or Roman Urdu mix).
-  agent: assignment_agent
+    description: >
+        {assignment_reply_scope}
+
+        Student: {student_name} ({roll_number}), Semester {semester}.
+        Their exact message: "{query}"
+
+        Use the assignment tool to load data, then answer like a helpful advisor — not
+        like a database export.
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - Do NOT add extra assignments or context they didn't ask for.
+        - Do NOT mention marks, feedback, dates (unless directly asked).
+        - Do NOT say encouraging phrases like "Make sure to submit soon" or "Keep it up".
+        - Do NOT greet with their name or add unnecessary warmth.
+        - Just answer the specific question directly and naturally.
+
+        CRITICAL — scope (read their wording carefully; must match SYSTEM-LOCKED block above):
+        - If they ask only for pending / "sirf pending" / "not submitted yet" /
+          "jo abhi submit nahi" / "pending assignments only" → talk ONLY about pending
+          items. Do NOT list overdue, submitted, or upcoming unless they explicitly
+          asked for those too.
+        - If they ask only overdue / late / missed → ONLY overdue.
+        - If they ask which is CLOSEST TO DUE / about to be due → ONLY the one closest to deadline.
+        - If they ask which was LAST SUBMITTED → ONLY the most recent submission, name + course only.
+        - If they ask only submitted / marks / feedback → ONLY submitted (with marks).
+        - If they ask only upcoming / "due later" → ONLY upcoming.
+        - If they ask for "all", "everything", "full status", "overview", or list
+          multiple types → then you may cover every category, briefly.
+        - If the query is vague ("assignments?"), give a short summary: counts or
+          the most urgent items (pending + overdue) in 2–4 bullets, then one line:
+          "Want details on submitted work or upcoming deadlines?"
+
+        Style:
+        - Short greeting (optional) + direct answer. No wall of text.
+        - Same language as the student (English, Roman Urdu, or mixed).
+        - Do NOT repeat section headers for categories they did not ask for.
+    expected_output: >
+        Plain chat text only: ONLY the assignment categories/items the student asked for,
+        with minimum details (course name, due date, status). Natural and concise — no fluff.
+    agent: assignment_agent
 
 check_fee_status_task:
-  description: >
-    Check fee status for student {student_name} ({roll_number}).
-    
-    Query: "{query}"
-    Semester: {semester}
-    
-    Retrieve:
-    - Current semester fee status (paid/unpaid/partial)
-    - Amount due and amount paid
-    - Payment history
-    - Due date for pending fees
-    
-    If student asks for documents but has unpaid fees, inform them politely.
-  expected_output: >
-    A friendly response with:
-    - Current fee status
-    - Any pending amount
-    - Payment deadline if applicable
-    - Reminder to pay if unpaid
-  agent: fee_agent
+    description: >
+        Student: {student_name} ({roll_number}), Semester {semester}.
+        Their exact message: "{query}"
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - Do NOT add extra details they didn't ask for.
+        - If they ask "paid or not", just say yes/no or amount owed.
+        - If they ask "current semester", show only current; do NOT paste full history.
+        - Do NOT mention payment methods or next steps unless asked.
+        - Do NOT greet or add unnecessary warmth.
+
+        **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If they ask just "fees" or "fees status" with no specifics, answer briefly with:
+        1. Current semester fee status (paid/unpaid/amount)
+        2. Then ask ONE clarifying line: "Need to know payment history, challan details, or refund status?"
+
+        Use the fee tool, then answer in scope: if they only ask "paid or not" or
+        "current semester", do not paste full payment history unless they ask for
+        history/challan/all semesters. If they ask for documents but fees are unpaid,
+        say so politely.
+    expected_output: >
+        Short, natural reply: ONLY what they asked (status / amount / history)
+        without extra sections or details they did not request. If vague, add one
+        clarifying question at the end.
+    agent: fee_agent
 
 get_exam_schedule_task:
-  description: >
-    Get exam schedule for student {student_name} ({roll_number}).
-    
-    Query: "{query}"
-    Semester: {semester}
-    Department: {department}
-    
-    Retrieve:
-    - Upcoming mid/final exams
-    - Exam dates and times
-    - Venues
-    - Which paper is first
-    
-    Sort by date to show nearest exam first.
-  expected_output: >
-    A clear exam schedule showing:
-    - Course name and exam type (mid/final)
-    - Date and time
-    - Venue/Hall
-    - Days remaining until exam
-    Highlight which exam is coming first.
-  agent: exam_agent
+    description: >
+        Student: {student_name} ({roll_number}), Semester {semester}, Dept {department}.
+        Their exact message: "{query}"
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - If they ask "when is next exam", list only the NEXT exam (date, venue, course).
+        - Do NOT list all upcoming exams unless they ask for "all" or "full schedule".
+        - Do NOT add extra details like admit card status unless asked.
+        - Do NOT greet or be overly warm.
+
+        **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If they ask just "exams" or "exam schedule" with no specifics:
+        1. Show the NEXT exam (date, time, venue, course)
+        2. Then ask ONE clarifying line: "Need full exam schedule, admit card status, or specific course date?"
+
+        Use the exam tool for schedule (date, venue, time, course). If they ask about
+        admit card, hall ticket, roll number slip, readiness, or "blocked" — use the
+        admit_card tool and explain is_ready and blocked_reason (e.g. fee_unpaid).
+        If they ask only "next exam" / "pehla paper" / "nearest", answer with that
+        one exam first, then offer more. Stay conversational.
+    expected_output: >
+        Clear, scoped exam or admit-card info only — not an unnecessary dump if they asked
+        a narrow question. If vague, add one clarifying question at the end.
+    agent: exam_agent
 
 fetch_grades_task:
-  description: >
-    Fetch academic grades for student {student_name} ({roll_number}).
-    
-    Query: "{query}"
-    
-    Based on the query, retrieve:
-    - Specific semester grades if mentioned
-    - Specific course grades if mentioned
-    - Overall CGPA
-    - Grade breakdown (mid, final, total)
-  expected_output: >
-    Academic performance summary with:
-    - Grades per course (letter grade and marks)
-    - Semester GPA
-    - Cumulative CGPA
-    - Encouraging message based on performance
-  agent: grade_agent
+    description: >
+        {grade_reply_scope}
+
+        Student: {student_name} ({roll_number}).
+        Their exact message: "{query}"
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - Do NOT dump all courses and semesters.
+        - Do NOT show extra details (mid marks, final marks tables) unless asked.
+        - If they ask CGPA, show only CGPA (one sentence).
+        - If they ask one course, show only that course.
+        - Do NOT greet with their name or add unnecessary warmth.
+
+        Use the grade tool to load data, then answer what they actually asked — do not
+        dump every course and every semester unless they want that.
+
+        CRITICAL — scope (must match SYSTEM-LOCKED block above when present):
+        - If they only ask for CGPA / GPA / "cgpi" / "pointer" / "overall result" /
+          "mera cgpa" with no other detail request → give cumulative CGPA clearly in
+          one or two sentences (you may add current semester in passing). Do NOT list
+          every subject, mid/final marks, or semester-by-semester tables.
+        - If they ask for one course / one subject / one code (e.g. CS301) → only
+          that course’s grades.
+        - If they name a semester (e.g. "semester 2") → only that semester’s courses.
+        - If they ask for "all grades", "transcript style", "breakdown", "har subject"
+          / "sab courses" → then provide fuller detail (courses, letters, SGPA).
+        - If vague ("grades?"), reply briefly: CGPA + one line offer — "Need semester-wise breakdown, specific course, or full transcript?"
+
+        Tone: warm, human, concise. Same language as the student.
+    expected_output: >
+        Plain chat text matching the requested scope only — no automatic full
+        transcript or extra details unless they asked for it.
+    agent: grade_agent
 
 process_document_request_task:
-  description: >
-    Process document request for student {student_name} ({roll_number}).
-    
-    Query: "{query}"
-    
-    IMPORTANT: Before processing, check fee status.
-    If fees are unpaid:
-    - Do NOT provide the document
-    - Inform student to clear dues first
-    
-    If fees are paid:
-    - Confirm document type requested
-    - Provide information on how to get it
-  expected_output: >
-    Either:
-    1. Confirmation that document can be processed (if fees clear)
-    2. Polite message that fees must be cleared first (if fees pending)
-    Include next steps for the student.
-  agent: document_agent
+    description: >
+        Process document request for student {student_name} ({roll_number}).
+
+        Query: "{query}"
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - Do NOT explain how to order or request documents unless asked.
+        - Do NOT list all available documents.
+        - Just state the status of what they asked for.
+        - Do NOT greet or add unnecessary warmth.
+
+        **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If they ask just "documents" or "document status" with no specifics:
+        1. Show status of most recent document request
+        2. Then ask ONE clarifying line: "Need transcript, enrollment certificate, or other specific document?"
+
+        Use the records tool for transcript/certificate request status (status,
+        ticket_number, blocked_reason). Use the fee tool to verify payment clearance.
+        If fees are unpaid or records show blocked_reason fee_unpaid:
+        - Explain that dues must be cleared / hold reason
+        If clear:
+        - Confirm document type and summarize status (issued, pending, on_hold)
+    expected_output: >
+        Short, natural reply: ONLY the document status they asked for, fee
+        clearance status, and next steps if something is on hold. If vague, add one
+        clarifying question at the end.
+    agent: document_agent
+
+fetch_attendance_task:
+    description: >
+        Student: {student_name} ({roll_number}), Semester {semester}, Dept {department}.
+        Query: "{query}"
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - If they ask one course, show only that course.
+        - If they ask "overall", just give overall percentage (do NOT list every course).
+        - Do NOT warn or lecture about 75% rule unless their attendance is below 75%.
+        - Do NOT greet or add unnecessary warmth.
+
+        **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If they ask just "attendance" with no specifics:
+        1. Show overall attendance percentage and status
+        2. Then ask ONE clarifying line: "Need attendance for a specific course or by subject?"
+
+        Use the attendance tool. Match scope: if they ask one course, filter to that;
+        if overall, summarize. Mention percentage and status (good/warning/critical).
+    expected_output: >
+        Plain chat: ONLY the attendance info they asked for (per course or overall),
+        same language as the student. If vague, add one clarifying question at the end.
+    agent: attendance_agent
+
+fetch_timetable_task:
+    description: >
+        Student: {student_name} ({roll_number}), Semester {semester}, Dept {department}.
+        Query: "{query}"
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - If they ask "Monday classes", show ONLY Monday.
+        - If they ask "full week", show the full week.
+        - Do NOT show extra days or the entire semester timetable.
+        - Do NOT greet or add unnecessary warmth.
+
+        **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If they ask just "timetable" or "schedule" with no day/week specified:
+        1. Show today's or this week's classes
+        2. Then ask ONE clarifying line: "Need a specific day, full week, or a particular course schedule?"
+
+        Use the timetable tool. Present by day or as a compact list — whatever fits
+        the question (e.g. "Monday classes" vs full week).
+    expected_output: >
+        Readable timetable snippet matching what they asked for — not a raw JSON dump
+        or unnecessary full schedule. If vague, add one clarifying question at the end.
+    agent: timetable_agent
+
+fetch_library_task:
+    description: >
+        Student: {student_name} ({roll_number}). Query: "{query}"
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - If they ask "which books I have", list only current books (do NOT mention fines unless asked).
+        - If they ask "fines", show only fines.
+        - Do NOT lecture about return dates.
+        - Do NOT greet or add unnecessary warmth.
+
+        **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If they ask just "library" with no specifics:
+        1. Show currently issued books and any overdue/fines
+        2. Then ask ONE clarifying line: "Need details on specific books, return dates, or fine status?"
+
+        Use the library tool. Call out overdue books and fines if any.
+    expected_output: >
+        Short reply: ONLY the books, due dates, or fines they asked about. If vague,
+        add one clarifying question at the end.
+    agent: library_agent
+
+fetch_scholarship_task:
+    description: >
+        Student: {student_name} ({roll_number}). Query: "{query}"
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - If they ask "do I have a scholarship", just say yes/no (do NOT list all scholarships unless asked).
+        - If they ask "next disbursement", show only that (do NOT list all previous disbursements).
+        - Do NOT greet or add unnecessary warmth.
+
+        **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If they ask just "scholarship" with no specifics:
+        1. Show if they have a scholarship and the amount
+        2. Then ask ONE clarifying line: "Need details on disbursement schedule, terms, or eligibility?"
+
+        Use the scholarship tool. If none on record, say so clearly.
+    expected_output: >
+        ONLY the scholarship info they asked for: names, amounts, status, next
+        disbursement — no extra details. If vague, add one clarifying question at the end.
+    agent: scholarship_agent
+
+fetch_hostel_task:
+    description: >
+        Student: {student_name} ({roll_number}). Query: "{query}"
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - If they ask "my room", show only room and warden.
+        - If they ask "hostel fee", show only fee.
+        - Do NOT list all hostel info unless asked.
+        - Do NOT greet or add unnecessary warmth.
+
+        **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If they ask just "hostel" with no specifics:
+        1. Show hostel status (room, warden, fee if available)
+        2. Then ask ONE clarifying line: "Need info on room change, hostel rules, or fee details?"
+
+        Use the hostel tool. If has_hostel is false, explain no allotment on record.
+    expected_output: >
+        ONLY what they asked for: room, fee, warden info — or polite no-hostel
+        message. If vague, add one clarifying question at the end.
+    agent: hostel_agent
+
+fetch_complaints_task:
+    description: >
+        Student: {student_name} ({roll_number}). Query: "{query}"
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - If they ask "status of my complaint", show only that ticket's status.
+        - Do NOT list all complaints unless they ask for "all".
+        - Do NOT offer to file a new complaint unless asked.
+        - Do NOT greet or add unnecessary warmth.
+
+        **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If they ask just "complaints" or "support" with no specifics:
+        1. Show status of most recent complaint ticket
+        2. Then ask ONE clarifying line: "Need status of a specific complaint or want to file a new one?"
+
+        Use the complaint tool. Summarize only the relevant tickets; match status to their question.
+    expected_output: >
+        ONLY the complaint ticket(s) they asked about: type, status, ticket_number,
+        response if any. No extra tickets or suggestions.
+    agent: complaint_agent
+
+fetch_announcements_task:
+    description: >
+        Student: {student_name} ({roll_number}), Dept {department}. Query: "{query}"
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - If they ask "urgent news", show ONLY urgent announcements (do NOT list all).
+        - If they ask "scholarship news", filter to scholarship-related only.
+        - Do NOT list every announcement unless they ask for "all".
+        - Do NOT greet or add unnecessary warmth.
+
+        **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If they ask just "announcements" or "news" with no specifics:
+        1. Show the most recent announcement/urgent notice
+        2. Then ask ONE clarifying line: "Need urgent news only, department news, or specific topic announcements?"
+
+        Use the announcement tool. If they ask urgent only, prioritize is_urgent.
+    expected_output: >
+        ONLY the relevant notices they asked about: titles and key dates from the text.
+        If vague, add one clarifying question at the end.
+    agent: announcement_agent
+
+send_email_task:
+    description: >
+        Student: {student_name} ({roll_number}) | student_id for tools: {student_id}
+        Query: "{query}"
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - Only send an email if the student clearly asks to send one.
+        - Do NOT suggest or offer to send emails unprompted.
+        - If information is missing (recipient, subject, body), ask one short follow-up.
+        - Do NOT greet or add unnecessary warmth.
+
+        **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If they ask something unclear about email:
+        1. Clarify: "Do you want to send an email? If yes, please tell me: recipient, subject, and message."
+        2. If missing any detail, ask: "Who should I send this to? What should the subject be?"
+
+        You have CrewAI Plus platform tools (e.g. Gmail send) when the server is configured.
+        Use them only for a clear send-email request: confirm recipient, subject, and body.
+        If the only tool is email_not_configured, explain that outbound email is not set up. 
+        Never claim an email was sent unless the platform tool succeeded.
+    expected_output: >
+        Plain language: what was sent (to/subject) or what is missing / not configured.
+        If vague, ask clarifying questions about recipient and message content.
+    agent: email_agent
+
+teacher_portal_task:
+    description: >
+        Faculty: {student_name} | Employee ID: {roll_number} | Dept: {department} |
+        teacher_id for tools: {student_id}
+
+        Query: "{query}"
+
+        Recent conversation:
+        {conversation_history}
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - Show only info relevant to their question.
+        - Do NOT list all assignments or courses unless asked.
+        - Do NOT greet or add unnecessary warmth.
+
+        **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If they ask vague questions (e.g., "assignments", "students", "teaching"):
+        1. Show most recent/relevant info (e.g., latest assignment, recent submissions)
+        2. Then ask ONE clarifying line with relevant options.
+        Examples:
+        - If vague on assignments: "[Brief assignment summary] Need submission counts, specific course, or timeline?"
+        - If vague on students: "[Recent submission info] Need student list, class participation, or course roster?"
+        - If vague on announcements: "[Latest notice] Need urgent announcements, department news, or specific topic?"
+
+        Use query_teacher_teaching for assignments this faculty member created and submission
+        counts. Use get_student_info for profile and assigned_course_codes. Use query_announcements
+        for relevant campus notices. Do NOT use student fee, personal grade, hostel, library,
+        scholarship, or admit-card tools.
+    expected_output: >
+        Plain faculty-focused reply — only the info they asked for. If vague,
+        add one clarifying question at the end.
+    agent: teacher_portal_agent
+
+admin_portal_task:
+    description: >
+        Admin user: {student_name} | ID: {roll_number} | Dept: {department} |
+        admin_id for tools: {student_id}
+
+        Query: "{query}"
+
+        Recent conversation:
+        {conversation_history}
+
+        **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
+        - Show only the specific info they requested.
+        - Do NOT list all system data or provide unnecessary summaries.
+        - Keep responses professional and concise.
+
+        **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If they ask unclear questions (e.g., "system", "announcements", "reports"):
+        1. Show most relevant current info
+        2. Then ask ONE clarifying line with relevant options.
+        Examples:
+        - If vague on announcements: "[Latest notice] Need urgent announcements, department-specific, or topic-based?"
+        - If vague on system: "[Current status] Need user stats, portal health, or active sessions?"
+        - If vague on reports: "[Latest summary] Need student records, course data, or specific report type?"
+
+        Use get_student_info for this admin's profile. Use query_announcements for active
+        notices. Give practical, neutral guidance; do not invent system-wide numbers.
+    expected_output: >
+        Short professional reply suitable for staff. If vague, add one
+        clarifying question at the end.
+    agent: admin_portal_agent

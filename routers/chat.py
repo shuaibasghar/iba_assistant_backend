@@ -28,9 +28,13 @@ router = APIRouter(prefix="/chat", tags=["Chat"])
 
 class StartSessionRequest(BaseModel):
     """Request to start a new chat session."""
-    student_id: Optional[str] = Field(None, description="MongoDB ObjectId of student")
-    roll_number: Optional[str] = Field(None, description="Student roll number")
-    email: Optional[str] = Field(None, description="Student email")
+    student_id: Optional[str] = Field(None, description="MongoDB ObjectId (student, teacher, or admin doc)")
+    roll_number: Optional[str] = Field(None, description="Student roll number or staff employee_id")
+    email: Optional[str] = Field(None, description="User email")
+    user_role: Optional[str] = Field(
+        None,
+        description="Must match JWT role: student | teacher | admin (strongly recommended)",
+    )
     tenant_id: str = Field("default", description="Tenant/University ID")
     
     class Config:
@@ -50,6 +54,7 @@ class SessionResponse(BaseModel):
     email: str
     semester: int
     department: str
+    user_role: str
     message: str
     
     class Config:
@@ -61,6 +66,7 @@ class SessionResponse(BaseModel):
                 "email": "ali.khan@iba-suk.edu.pk",
                 "semester": 3,
                 "department": "CS",
+                "user_role": "student",
                 "message": "Welcome Ali Khan! How can I help you today?"
             }
         }
@@ -134,10 +140,10 @@ async def start_session(
     service: ChatService = Depends(get_service)
 ):
     """
-    Start a new chat session for a student.
+    Start a new chat session for a student, teacher, or admin.
     
-    Provide one of: student_id, roll_number, or email to identify the student.
-    Returns session_id to use for subsequent chat messages.
+    Provide one of: student_id, roll_number, or email. Pass ``user_role`` matching
+    the logged-in JWT role so the correct MongoDB collection is used.
     
     Session expires after 30 minutes of inactivity.
     """
@@ -151,13 +157,14 @@ async def start_session(
         student_id=request.student_id,
         roll_number=request.roll_number,
         email=request.email,
-        tenant_id=request.tenant_id
+        tenant_id=request.tenant_id,
+        hint_role=request.user_role,
     )
     
     if not session:
         raise HTTPException(
             status_code=404,
-            detail="Student not found. Check the provided credentials."
+            detail="User not found. Use credentials registered in the portal and pass user_role (student | teacher | admin) matching your login."
         )
     
     return SessionResponse(
@@ -167,6 +174,7 @@ async def start_session(
         email=session.email,
         semester=session.semester,
         department=session.department,
+        user_role=session.user_role,
         message=f"Welcome {session.student_name}! How can I help you today?"
     )
 
@@ -395,3 +403,125 @@ async def index_vector_data():
             status_code=500,
             detail=f"Indexing error: {str(e)}"
         )
+
+
+from fastapi import File, UploadFile, Form
+from services.pdf_assignment_extract import _extract_pdf_text
+from services.document_analyzer import handle_document_upload
+
+@router.post("/upload_file")
+async def chat_file_upload_endpoint(
+    session_id: str = Form(...),
+    file: UploadFile = File(...),
+    service: ChatService = Depends(get_service)
+):
+    """
+    Agentic File Upload:
+    Whenever a file is sent in chat, it extracts its data using NLP
+    to figure out what this document is, sends a summary response,
+    and if it's assignment-related + uploader is a teacher → emails
+    enrolled students automatically.
+    """
+    body = await file.read()
+
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported for agent extraction right now.")
+
+    try:
+        text = _extract_pdf_text(body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read PDF text: {str(e)}")
+
+    if not text.strip():
+        return {
+            "success": True,
+            "message": "I received the file, but it appears to be empty or an image-based PDF that I couldn't read."
+        }
+
+    # Get session to know who uploaded (teacher / student / admin)
+    session = service.get_session(session_id)
+    user_role = "student"
+    user_id = ""
+    user_name = "Unknown"
+    if session:
+        user_role = session.user_role
+        user_id = session.student_id      # stores Mongo _id for any role
+        user_name = session.student_name
+
+    # Classify document via NLP + send emails if assignment & teacher
+    analyzer_result = handle_document_upload(
+        text=text,
+        filename=file.filename or "document.pdf",
+        session_user_role=user_role,
+        session_user_id=user_id,
+        session_user_name=user_name,
+    )
+
+    classification = analyzer_result.get("classification", {})
+    doc_type = classification.get("document_type", "other")
+    summary = classification.get("summary", "I analysed the document.")
+    key_dates = classification.get("key_dates", [])
+    title = classification.get("title_hint") or file.filename
+
+    # Build a natural-language chat reply
+    notify_label = analyzer_result.get("notify_target_label", "")
+    reply_parts = [f"📄 **Document:** {title}", f"**Type:** {doc_type.title()}", f"**Summary:** {summary}"]
+
+    if key_dates:
+        dates_str = ", ".join(f"{d.get('label','Date')}: {d.get('date','N/A')}" for d in key_dates)
+        reply_parts.append(f"**Key Dates:** {dates_str}")
+
+    # Assignment saved to DB?
+    if analyzer_result.get("assignment_saved"):
+        save_info = analyzer_result.get("assignment_save_details", {})
+        cname = save_info.get("course_name", save_info.get("course_code", "?"))
+        ccode = save_info.get("course_code", "")
+        reply_parts.append(
+            f"\n📝 Assignment published to **{cname} ({ccode})** "
+            f"(due: {save_info.get('due_date', 'N/A')[:10]}). "
+            f"{save_info.get('students_count', 0)} student(s) can now see it."
+        )
+
+    # Student submission recorded?
+    if analyzer_result.get("submission_recorded"):
+        sub_info = analyzer_result.get("submission_details", {})
+        cname = sub_info.get("course_name", sub_info.get("course_code", "?"))
+        ccode = sub_info.get("course_code", "")
+        a_title = sub_info.get("assignment_title", "assignment")
+        teacher = sub_info.get("teacher_name", "your teacher")
+        reply_parts.append(
+            f"\n📝 Submission recorded for **{a_title}** in **{cname} ({ccode})**."
+        )
+        if sub_info.get("submission_updated"):
+            reply_parts.append("✅ Your assignment status has been updated to **submitted**.")
+        if sub_info.get("teacher_email"):
+            reply_parts.append(f"📧 **{teacher}** will be notified about your submission.")
+
+    if not analyzer_result.get("email_configured"):
+        reply_parts.append("\n⚠️ Email notifications are not configured (SMTP credentials missing in .env).")
+    elif analyzer_result.get("email_sent"):
+        details = analyzer_result["email_details"]
+        reply_parts.append(
+            f"\n✅ Emails sent to {details['sent']} recipient(s) in **{notify_label}**."
+        )
+        if details.get("failed"):
+            reply_parts.append(f"⚠️ {details['failed']} email(s) failed to deliver.")
+    elif notify_label and notify_label != "none":
+        reply_parts.append(f"\nℹ️ Identified target: **{notify_label}**, but no recipients found in the database.")
+
+    message = "\n".join(reply_parts)
+
+    # Also push through ChatService so this stays in conversation memory
+    prompt = (
+        f"I just uploaded a document named '{file.filename}'. "
+        f"Please analyze the following text extracted from it, figure out what kind of document it is, "
+        f"and provide a short helpful summary of its contents. If it contains dates or deadlines, list them.\n\n"
+        f"--- DOCUMENT TEXT ---\n{text[:3000]}\n--- END TEXT ---"
+    )
+    service.chat(session_id=session_id, message=prompt)
+
+    return {
+        "success": True,
+        "message": message,
+    }
+

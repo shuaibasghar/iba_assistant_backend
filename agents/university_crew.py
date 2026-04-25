@@ -19,11 +19,41 @@ from typing import Any
 import yaml
 
 from .tools.database_tools import (
+    AdmitCardQueryTool,
+    AnnouncementQueryTool,
     AssignmentQueryTool,
+    AttendanceQueryTool,
+    ComplaintQueryTool,
+    CourseTeacherQueryTool,
     FeeQueryTool,
     ExamQueryTool,
     GradeQueryTool,
+    HostelQueryTool,
+    LibraryQueryTool,
+    RecordsQueryTool,
+    ScholarshipQueryTool,
     StudentInfoTool,
+    TeacherTeachingQueryTool,
+    TimetableQueryTool,
+)
+from utils.query_scope import assignment_scope_prompt, grade_scope_prompt
+from .tools.platform_email_tools import get_platform_email_tools
+
+# Match order used for substring routing (exclude GENERAL).
+_CREW_ROUTE_INTENTS = (
+    "SCHOLARSHIP",
+    "ANNOUNCEMENT",
+    "ATTENDANCE",
+    "TIMETABLE",
+    "COMPLAINT",
+    "LIBRARY",
+    "HOSTEL",
+    "DOCUMENT",
+    "ASSIGNMENT",
+    "FEE",
+    "EXAM",
+    "GRADE",
+    "EMAIL",
 )
 
 
@@ -91,7 +121,18 @@ class ToolFactory:
             "assignment": AssignmentQueryTool,
             "fee": FeeQueryTool,
             "exam": ExamQueryTool,
+            "admit_card": AdmitCardQueryTool,
             "grade": GradeQueryTool,
+            "records": RecordsQueryTool,
+            "attendance": AttendanceQueryTool,
+            "timetable": TimetableQueryTool,
+            "course_teacher": CourseTeacherQueryTool,
+            "library": LibraryQueryTool,
+            "scholarship": ScholarshipQueryTool,
+            "hostel": HostelQueryTool,
+            "complaint": ComplaintQueryTool,
+            "announcement": AnnouncementQueryTool,
+            "teacher_teaching": TeacherTeachingQueryTool,
         }
         
         if tool_name not in tools:
@@ -103,12 +144,37 @@ class ToolFactory:
     @staticmethod
     def get_tools_for_intent(intent: str, db_config: dict = None) -> list:
         """Get the appropriate tools for a given intent."""
+        if intent == "EMAIL":
+            tools = list(get_platform_email_tools())
+            tools.append(ToolFactory.create_tool("student_info", db_config))
+            return tools
+
+        if intent == "TEACHER":
+            return [
+                ToolFactory.create_tool("teacher_teaching", db_config),
+                ToolFactory.create_tool("student_info", db_config),
+                ToolFactory.create_tool("announcement", db_config),
+            ]
+
+        if intent == "ADMIN":
+            return [
+                ToolFactory.create_tool("student_info", db_config),
+                ToolFactory.create_tool("announcement", db_config),
+            ]
+
         intent_tools = {
             "ASSIGNMENT": ["assignment", "student_info"],
             "FEE": ["fee", "student_info"],
-            "EXAM": ["exam", "student_info"],
+            "EXAM": ["exam", "admit_card", "student_info"],
             "GRADE": ["grade", "student_info"],
-            "DOCUMENT": ["fee", "student_info"],  # Needs fee check
+            "DOCUMENT": ["records", "fee", "student_info"],
+            "ATTENDANCE": ["attendance", "student_info"],
+            "TIMETABLE": ["timetable", "course_teacher", "student_info"],
+            "LIBRARY": ["library", "student_info"],
+            "SCHOLARSHIP": ["scholarship", "student_info"],
+            "HOSTEL": ["hostel", "student_info"],
+            "COMPLAINT": ["complaint", "student_info"],
+            "ANNOUNCEMENT": ["announcement", "student_info"],
             "GENERAL": ["student_info"],
         }
         
@@ -133,6 +199,16 @@ class AgentFactory:
         "EXAM": "exam_agent",
         "GRADE": "grade_agent",
         "DOCUMENT": "document_agent",
+        "ATTENDANCE": "attendance_agent",
+        "TIMETABLE": "timetable_agent",
+        "LIBRARY": "library_agent",
+        "SCHOLARSHIP": "scholarship_agent",
+        "HOSTEL": "hostel_agent",
+        "COMPLAINT": "complaint_agent",
+        "ANNOUNCEMENT": "announcement_agent",
+        "EMAIL": "email_agent",
+        "TEACHER": "teacher_portal_agent",
+        "ADMIN": "admin_portal_agent",
         "GENERAL": "general_assistant",
     }
     
@@ -143,6 +219,16 @@ class AgentFactory:
         "EXAM": "get_exam_schedule_task",
         "GRADE": "fetch_grades_task",
         "DOCUMENT": "process_document_request_task",
+        "ATTENDANCE": "fetch_attendance_task",
+        "TIMETABLE": "fetch_timetable_task",
+        "LIBRARY": "fetch_library_task",
+        "SCHOLARSHIP": "fetch_scholarship_task",
+        "HOSTEL": "fetch_hostel_task",
+        "COMPLAINT": "fetch_complaints_task",
+        "ANNOUNCEMENT": "fetch_announcements_task",
+        "EMAIL": "send_email_task",
+        "TEACHER": "teacher_portal_task",
+        "ADMIN": "admin_portal_task",
         "GENERAL": "general_conversation_task",
     }
     
@@ -170,7 +256,7 @@ class AgentFactory:
     ) -> Agent:
         """Create a specialist agent based on detected intent."""
         config = AgentConfigLoader.load_agents_config(tenant_id)
-        agent_key = cls.INTENT_TO_AGENT.get(intent, "router_agent")
+        agent_key = cls.INTENT_TO_AGENT.get(intent, "general_assistant")
         agent_config = config[agent_key]
         
         tools = ToolFactory.get_tools_for_intent(intent, db_config)
@@ -230,7 +316,7 @@ class TaskFactory:
     ) -> Task:
         """Create a specialist task for the detected intent."""
         config = AgentConfigLoader.load_tasks_config(tenant_id)
-        task_key = AgentFactory.INTENT_TO_TASK.get(intent, "route_query_task")
+        task_key = AgentFactory.INTENT_TO_TASK.get(intent, "general_conversation_task")
         task_config = config[task_key]
         
         # Inject dynamic context into description
@@ -242,10 +328,20 @@ class TaskFactory:
             semester=student_context.get("semester", "Unknown"),
             department=student_context.get("department", "Unknown"),
         )
-        if task_key == "general_conversation_task":
+        if task_key in (
+            "general_conversation_task",
+            "teacher_portal_task",
+            "admin_portal_task",
+        ):
             format_args["conversation_history"] = student_context.get(
                 "conversation_history", "No previous messages."
             )
+        if task_key == "fetch_assignments_task":
+            scope = student_context.get("assignment_reply_scope", "ALL")
+            format_args["assignment_reply_scope"] = assignment_scope_prompt(scope)
+        if task_key == "fetch_grades_task":
+            scope = student_context.get("grade_reply_scope", "ALL")
+            format_args["grade_reply_scope"] = grade_scope_prompt(scope)
         description = task_config["description"].format(**format_args)
         
         return Task(
@@ -335,7 +431,7 @@ class UniversityCrewFactory:
     def route_query(self, query: str, student_context: dict) -> str:
         """
         Route a query to determine intent.
-        Returns: Intent string (ASSIGNMENT, FEE, EXAM, GRADE, DOCUMENT, GENERAL)
+        Returns: Intent string (one of _CREW_ROUTE_INTENTS or GENERAL)
         """
         crew = self.create_routing_crew(query, student_context)
         result = crew.kickoff()
@@ -343,10 +439,10 @@ class UniversityCrewFactory:
         # Parse intent from result (simplified - enhance as needed)
         result_text = str(result).upper()
         
-        for intent in ["ASSIGNMENT", "FEE", "EXAM", "GRADE", "DOCUMENT"]:
+        for intent in _CREW_ROUTE_INTENTS:
             if intent in result_text:
                 return intent
-        
+
         return "GENERAL"
     
     def execute_query(

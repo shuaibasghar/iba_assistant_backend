@@ -1,5 +1,4 @@
 
-
 crewai
 crewai-tools
 langchain
@@ -11,6 +10,7 @@ langchain-openai
 numpy
 pandas
 ipython
+pypdf
 # FastAPI and web framework dependencies
 fastapi
 requests
@@ -19,7 +19,7 @@ python-multipart
 python-jose[cryptography]
 passlib[bcrypt]
 python-dotenv
-
+reportlab
 # Database dependencies
 sqlalchemy
 alembic
@@ -44,3 +44,10 @@ PyYAML
 
 # Async MongoDB
 motor>=3.3.1
+
+# PDF text extraction (assignment briefs)
+pypdf>=4.0.0
+python-dateutil>=2.8.0
+
+# WhatsApp Cloud API HTTP client
+httpx>=0.27.0

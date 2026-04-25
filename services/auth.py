@@ -88,7 +88,10 @@ class AuthService:
             self.settings.redis_url,
             decode_responses=True
         )
-        self.mongo_client = MongoClient(self.settings.mongodb_url)
+        self.mongo_client = MongoClient(
+            self.settings.mongodb_url,
+            serverSelectionTimeoutMS=15_000,
+        )
         self.db = self.mongo_client[self.settings.mongodb_database]
     
     def verify_password(self, plain_password: str, hashed_password: str) -> bool:
@@ -315,7 +318,7 @@ class AuthService:
         self.settings = get_settings()
         if self.mongo_client:
             self.mongo_client.close()
-        self.mongo_client = MongoClient(mongodb_url)
+        self.mongo_client = MongoClient(mongodb_url, serverSelectionTimeoutMS=15_000)
         self.db = self.mongo_client[mongodb_database]
         if redis_url:
             self.redis_client = redis.from_url(redis_url, decode_responses=True)
@@ -434,7 +437,9 @@ async def get_current_teacher(
         department=teacher.get("department", ""),
         employee_id=teacher.get("employee_id", ""),
         designation=teacher.get("designation", ""),
-        courses=teacher.get("courses", [])
+        courses=teacher.get("assigned_course_codes")
+        or teacher.get("courses")
+        or [],
     )
 
 

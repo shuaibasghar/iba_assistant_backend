@@ -19,7 +19,7 @@ from config import get_settings
 
 @dataclass
 class StudentSession:
-    """Represents an active student session."""
+    """Represents an active chat session (student or teacher)."""
     session_id: str
     student_id: str
     student_name: str
@@ -32,17 +32,22 @@ class StudentSession:
     tenant_id: str
     created_at: str
     last_active: str
+    user_role: str = "student"
+    designation: str = ""
     
     def to_dict(self) -> dict:
         return asdict(self)
     
     @classmethod
     def from_dict(cls, data: dict) -> "StudentSession":
+        data = dict(data)
+        data.setdefault("user_role", "student")
+        data.setdefault("designation", "")
         return cls(**data)
     
     def get_context(self) -> dict:
-        """Get student context for CrewAI agents."""
-        return {
+        """Get user context for CrewAI agents (student_id is Mongo _id for that role's document)."""
+        ctx = {
             "student_id": self.student_id,
             "student_name": self.student_name,
             "roll_number": self.roll_number,
@@ -51,7 +56,11 @@ class StudentSession:
             "department": self.department,
             "batch": self.batch,
             "cgpa": self.cgpa,
+            "user_role": self.user_role,
         }
+        if self.user_role in ("teacher", "admin"):
+            ctx["designation"] = self.designation
+        return ctx
 
 
 class SessionManager:
@@ -85,7 +94,10 @@ class SessionManager:
         self.ttl = self.settings.session_ttl_seconds
         
         # MongoDB for fetching student data
-        self.mongo_client = MongoClient(self.settings.mongodb_url)
+        self.mongo_client = MongoClient(
+            self.settings.mongodb_url,
+            serverSelectionTimeoutMS=15_000,
+        )
         self.db = self.mongo_client[self.settings.mongodb_database]
     
     def _get_session_key(self, session_id: str) -> str:
@@ -108,50 +120,147 @@ class SessionManager:
         """Fetch student by email."""
         return self.db["students"].find_one({"email": email})
     
+    def _get_teacher_from_db(self, teacher_id: str) -> Optional[dict]:
+        """Fetch teacher by MongoDB ObjectId."""
+        try:
+            return self.db["teachers"].find_one({"_id": ObjectId(teacher_id)})
+        except Exception:
+            return None
+    
+    def _get_teacher_by_employee_id(self, employee_id: str) -> Optional[dict]:
+        return self.db["teachers"].find_one({"employee_id": employee_id})
+    
+    def _get_teacher_by_email(self, email: str) -> Optional[dict]:
+        return self.db["teachers"].find_one({"email": email})
+    
+    def _get_admin_from_db(self, admin_id: str) -> Optional[dict]:
+        try:
+            return self.db["admins"].find_one({"_id": ObjectId(admin_id)})
+        except Exception:
+            return None
+    
+    def _get_admin_by_employee_id(self, employee_id: str) -> Optional[dict]:
+        return self.db["admins"].find_one({"employee_id": employee_id})
+    
+    def _get_admin_by_email(self, email: str) -> Optional[dict]:
+        return self.db["admins"].find_one({"email": email})
+    
     def create_session(
         self, 
         student_id: str = None,
         roll_number: str = None,
         email: str = None,
-        tenant_id: str = "default"
+        tenant_id: str = "default",
+        hint_role: Optional[str] = None,
     ) -> Optional[StudentSession]:
         """
-        Create a new session for a student.
-        Can lookup by student_id, roll_number, or email.
+        Create a new chat session for student, teacher, or admin.
+
+        ``hint_role`` should match the JWT role (student | teacher | admin) so the
+        correct collection is used. If omitted, tries student → teacher → admin.
         """
-        # Find student in DB
+        hr = (hint_role or "").strip().lower()
         student = None
-        if student_id:
-            student = self._get_student_from_db(student_id)
-        elif roll_number:
-            student = self._get_student_by_roll_number(roll_number)
-        elif email:
-            student = self._get_student_by_email(email)
-        
-        if not student:
-            return None
-        
-        # Generate session ID
+        teacher = None
+        admin_doc = None
+
+        def _lookup_student() -> None:
+            nonlocal student
+            if student_id:
+                student = self._get_student_from_db(student_id)
+            elif roll_number:
+                student = self._get_student_by_roll_number(roll_number)
+            elif email:
+                student = self._get_student_by_email(email)
+
+        def _lookup_teacher() -> None:
+            nonlocal teacher
+            if student_id:
+                teacher = self._get_teacher_from_db(student_id)
+            elif roll_number:
+                teacher = self._get_teacher_by_employee_id(roll_number)
+            elif email:
+                teacher = self._get_teacher_by_email(email)
+
+        def _lookup_admin() -> None:
+            nonlocal admin_doc
+            if student_id:
+                admin_doc = self._get_admin_from_db(student_id)
+            elif roll_number:
+                admin_doc = self._get_admin_by_employee_id(roll_number)
+            elif email:
+                admin_doc = self._get_admin_by_email(email)
+
+        if hr == "student":
+            _lookup_student()
+        elif hr == "teacher":
+            _lookup_teacher()
+        elif hr == "admin":
+            _lookup_admin()
+        else:
+            _lookup_student()
+            if not student:
+                _lookup_teacher()
+            if not student and not teacher:
+                _lookup_admin()
+
         session_id = str(uuid.uuid4())
         now = datetime.now().isoformat()
+
+        if student:
+            session = StudentSession(
+                session_id=session_id,
+                student_id=str(student["_id"]),
+                student_name=student.get("full_name", "Unknown"),
+                roll_number=student.get("roll_number", ""),
+                email=student.get("email", ""),
+                semester=student.get("semester", 1),
+                department=student.get("department", ""),
+                batch=student.get("batch", ""),
+                cgpa=student.get("cgpa", 0.0),
+                tenant_id=tenant_id,
+                created_at=now,
+                last_active=now,
+                user_role="student",
+                designation="",
+            )
+        elif teacher:
+            session = StudentSession(
+                session_id=session_id,
+                student_id=str(teacher["_id"]),
+                student_name=teacher.get("full_name", "Unknown"),
+                roll_number=teacher.get("employee_id", ""),
+                email=teacher.get("email", ""),
+                semester=0,
+                department=teacher.get("department", ""),
+                batch="",
+                cgpa=0.0,
+                tenant_id=tenant_id,
+                created_at=now,
+                last_active=now,
+                user_role="teacher",
+                designation=teacher.get("designation", ""),
+            )
+        elif admin_doc:
+            session = StudentSession(
+                session_id=session_id,
+                student_id=str(admin_doc["_id"]),
+                student_name=admin_doc.get("full_name", "Unknown"),
+                roll_number=admin_doc.get("employee_id", ""),
+                email=admin_doc.get("email", ""),
+                semester=0,
+                department=admin_doc.get("department", ""),
+                batch="",
+                cgpa=0.0,
+                tenant_id=tenant_id,
+                created_at=now,
+                last_active=now,
+                user_role="admin",
+                designation=str(admin_doc.get("role", "admin")),
+            )
+        else:
+            return None
         
-        # Create session object
-        session = StudentSession(
-            session_id=session_id,
-            student_id=str(student["_id"]),
-            student_name=student.get("full_name", "Unknown"),
-            roll_number=student.get("roll_number", ""),
-            email=student.get("email", ""),
-            semester=student.get("semester", 1),
-            department=student.get("department", ""),
-            batch=student.get("batch", ""),
-            cgpa=student.get("cgpa", 0.0),
-            tenant_id=tenant_id,
-            created_at=now,
-            last_active=now,
-        )
-        
-        # Store in Redis with TTL
         key = self._get_session_key(session_id)
         self.redis_client.setex(
             key,

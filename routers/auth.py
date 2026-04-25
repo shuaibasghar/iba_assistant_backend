@@ -160,7 +160,9 @@ async def login(
         user_info.update({
             "employee_id": user.get("employee_id", ""),
             "designation": user.get("designation", ""),
-            "courses": user.get("courses", [])
+            "courses": user.get("assigned_course_codes")
+            or user.get("courses")
+            or [],
         })
     
     return LoginResponse(

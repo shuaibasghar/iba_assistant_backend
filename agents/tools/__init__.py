@@ -1,18 +1,36 @@
 # Agent Tools Package
 from .database_tools import (
+    AdmitCardQueryTool,
+    AnnouncementQueryTool,
     AssignmentQueryTool,
+    AttendanceQueryTool,
+    ComplaintQueryTool,
     FeeQueryTool,
     ExamQueryTool,
     GradeQueryTool,
-    StudentInfoTool,
+    HostelQueryTool,
+    LibraryQueryTool,
+    RecordsQueryTool,
+    ScholarshipQueryTool,
     SemanticSearchTool,
+    StudentInfoTool,
+    TimetableQueryTool,
 )
 
 __all__ = [
+    "AdmitCardQueryTool",
+    "AnnouncementQueryTool",
     "AssignmentQueryTool",
-    "FeeQueryTool", 
+    "AttendanceQueryTool",
+    "ComplaintQueryTool",
+    "FeeQueryTool",
     "ExamQueryTool",
     "GradeQueryTool",
+    "HostelQueryTool",
+    "LibraryQueryTool",
+    "RecordsQueryTool",
+    "ScholarshipQueryTool",
     "StudentInfoTool",
+    "TimetableQueryTool",
     "SemanticSearchTool",
 ]

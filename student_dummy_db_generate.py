@@ -202,20 +202,32 @@ for s in students_raw:
         {"$set": {"student_id": student_id}}
     )
 
-# ── Superuser ──
+# ── Superadmin (JWT role `superadmin`; legacy seeds used `superuser`) ──
 super_user = {
-    "username"      : "superadmin",
-    "email"         : "admin@iba-suk.edu.pk",
-    "password_hash" : hash_password("admin123"),
-    "role"          : "superuser",
-    "is_active"     : True,
-    "created_at"    : datetime.now(),
-    "last_login"    : None,
-    "student_id"    : None,
+    "username": "superadmin",
+    "email": "admin@iba-suk.edu.pk",
+    "password_hash": hash_password("admin123"),
+    "role": "superadmin",
+    "is_active": True,
+    "created_at": datetime.now(),
+    "last_login": None,
+    "student_id": None,
 }
-db["users"].insert_one(super_user)
+sa_uid = db["users"].insert_one(super_user).inserted_id
+db["superadmins"].insert_one({
+    "user_id": sa_uid,
+    "full_name": "System Superadmin",
+    "email": "admin@iba-suk.edu.pk",
+    "employee_id": "SUP-001",
+    "department": "System",
+    "password_hash": super_user["password_hash"],
+    "designation": "Superadmin",
+    "role": "superadmin",
+    "status": "active",
+    "created_at": datetime.now(),
+})
 
-print(f"   ✅  {len(students_raw)} students + 1 superuser inserted.\n")
+print(f"   ✅  {len(students_raw)} students + 1 superadmin inserted.\n")
 
 # ─────────────────────────────────────────
 # 3. ENROLLMENTS
@@ -574,7 +586,7 @@ print(f"""
 │ sara_cs     │ student123   │ 3rd       │ CS       │ ✅ PAID    │
 │ zain_se     │ student123   │ 5th       │ SE       │ ⚠️ PARTIAL │
 │ nida_cs     │ student123   │ 2nd       │ CS       │ ✅ PAID    │
-│ superadmin  │ admin123     │ —         │ —        │ superuser  │
+│ superadmin  │ admin123     │ —         │ —        │ superadmin │
 └─────────────┴──────────────┴───────────┴──────────┴────────────┘
 
 📊  Collections Created:

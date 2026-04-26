@@ -68,11 +68,11 @@ class IntentClassifier:
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", """You are an intent classifier for a university portal (students and faculty).
 Classify the user's query into ONE of these categories:
-- ASSIGNMENT: Assignments, homework, submissions, due dates
+- ASSIGNMENT: Assignments, homework, submissions, course PDFs/handouts, class file or link requests (not transcripts)
 - FEE: Fees, payment, dues, challan
 - EXAM: Exams, schedule, papers, dates, venues, admit card, hall ticket
 - GRADE: Grades, marks, results, CGPA, GPA
-- DOCUMENT: Transcripts, enrollment certificates, official document status
+- DOCUMENT: Transcripts, enrollment certificates, degree/official document status (registrar); vague "document" if likely official, not class handouts
 - ATTENDANCE: Class attendance, shortage, percentage, 75% rule
 - TIMETABLE: Class schedule, time table, room, which class when
 - LIBRARY: Library books, due dates, fines, returns
@@ -84,6 +84,10 @@ Classify the user's query into ONE of these categories:
 - GENERAL: Greetings, small talk, unclear intent
 
 Respond with ONLY the category name, nothing else.
+
+If the message is too vague to map safely, still pick the closest category; specialist
+agents are instructed to ask one clarifying question (e.g. what specifically they need)
+instead of guessing.
 
 User is: {student_name} | Role: {user_role} | Semester: {semester} | Dept: {department}
 Recent conversation:
@@ -247,6 +251,8 @@ class ChatService:
             intent = "TEACHER"
         elif ur == "admin":
             intent = "ADMIN"
+        elif ur in ("superadmin", "superuser"):
+            intent = "SUPERADMIN"
         else:
             intent = self.intent_classifier.classify(
                 query=message,

@@ -58,7 +58,7 @@ class StudentSession:
             "cgpa": self.cgpa,
             "user_role": self.user_role,
         }
-        if self.user_role in ("teacher", "admin"):
+        if self.user_role in ("teacher", "admin", "superadmin"):
             ctx["designation"] = self.designation
         return ctx
 
@@ -144,7 +144,16 @@ class SessionManager:
     
     def _get_admin_by_email(self, email: str) -> Optional[dict]:
         return self.db["admins"].find_one({"email": email})
-    
+
+    def _get_superadmin_from_db(self, user_id: str) -> Optional[dict]:
+        try:
+            return self.db["superadmins"].find_one({"_id": ObjectId(user_id)})
+        except Exception:
+            return None
+
+    def _get_superadmin_by_email(self, email: str) -> Optional[dict]:
+        return self.db["superadmins"].find_one({"email": email})
+
     def create_session(
         self, 
         student_id: str = None,
@@ -154,15 +163,18 @@ class SessionManager:
         hint_role: Optional[str] = None,
     ) -> Optional[StudentSession]:
         """
-        Create a new chat session for student, teacher, or admin.
+        Create a new chat session for student, teacher, admin, or superadmin.
 
-        ``hint_role`` should match the JWT role (student | teacher | admin) so the
-        correct collection is used. If omitted, tries student → teacher → admin.
+        ``hint_role`` should match the JWT role (student | teacher | admin | superadmin) so the
+        correct collection is used. If omitted, tries student → teacher → admin → superadmin.
         """
         hr = (hint_role or "").strip().lower()
+        if hr == "superuser":
+            hr = "superadmin"
         student = None
         teacher = None
         admin_doc = None
+        superadmin_doc = None
 
         def _lookup_student() -> None:
             nonlocal student
@@ -191,18 +203,29 @@ class SessionManager:
             elif email:
                 admin_doc = self._get_admin_by_email(email)
 
+        def _lookup_superadmin() -> None:
+            nonlocal superadmin_doc
+            if student_id:
+                superadmin_doc = self._get_superadmin_from_db(student_id)
+            elif email:
+                superadmin_doc = self._get_superadmin_by_email(email)
+
         if hr == "student":
             _lookup_student()
         elif hr == "teacher":
             _lookup_teacher()
         elif hr == "admin":
             _lookup_admin()
+        elif hr == "superadmin":
+            _lookup_superadmin()
         else:
             _lookup_student()
             if not student:
                 _lookup_teacher()
             if not student and not teacher:
                 _lookup_admin()
+            if not student and not teacher and not admin_doc:
+                _lookup_superadmin()
 
         session_id = str(uuid.uuid4())
         now = datetime.now().isoformat()
@@ -257,6 +280,23 @@ class SessionManager:
                 last_active=now,
                 user_role="admin",
                 designation=str(admin_doc.get("role", "admin")),
+            )
+        elif superadmin_doc:
+            session = StudentSession(
+                session_id=session_id,
+                student_id=str(superadmin_doc["_id"]),
+                student_name=superadmin_doc.get("full_name", "Unknown"),
+                roll_number=superadmin_doc.get("employee_id", "") or "superadmin",
+                email=superadmin_doc.get("email", ""),
+                semester=0,
+                department=superadmin_doc.get("department", "") or "System",
+                batch="",
+                cgpa=0.0,
+                tenant_id=tenant_id,
+                created_at=now,
+                last_active=now,
+                user_role="superadmin",
+                designation="Superadmin",
             )
         else:
             return None

@@ -4,7 +4,7 @@ Chat API Router
 FastAPI endpoints for the chat service.
 """
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
@@ -33,7 +33,7 @@ class StartSessionRequest(BaseModel):
     email: Optional[str] = Field(None, description="User email")
     user_role: Optional[str] = Field(
         None,
-        description="Must match JWT role: student | teacher | admin (strongly recommended)",
+        description="Must match JWT role: student | teacher | admin | superadmin (strongly recommended)",
     )
     tenant_id: str = Field("default", description="Tenant/University ID")
     
@@ -164,7 +164,7 @@ async def start_session(
     if not session:
         raise HTTPException(
             status_code=404,
-            detail="User not found. Use credentials registered in the portal and pass user_role (student | teacher | admin) matching your login."
+            detail="User not found. Use credentials registered in the portal and pass user_role (student | teacher | admin | superadmin) matching your login."
         )
     
     return SessionResponse(
@@ -406,11 +406,13 @@ async def index_vector_data():
 
 
 from fastapi import File, UploadFile, Form
+from config import get_settings
 from services.pdf_assignment_extract import _extract_pdf_text
 from services.document_analyzer import handle_document_upload
 
 @router.post("/upload_file")
 async def chat_file_upload_endpoint(
+    request: Request,
     session_id: str = Form(...),
     file: UploadFile = File(...),
     service: ChatService = Depends(get_service)
@@ -448,13 +450,20 @@ async def chat_file_upload_endpoint(
         user_id = session.student_id      # stores Mongo _id for any role
         user_name = session.student_name
 
-    # Classify document via NLP + send emails if assignment & teacher
+    settings = get_settings()
+    download_base = (settings.public_api_base_url or "").strip().rstrip("/")
+    if not download_base:
+        download_base = str(request.base_url).rstrip("/")
+
+    # Classify header via NLP, persist full PDF, emails/WhatsApp, absolute signed download URL
     analyzer_result = handle_document_upload(
         text=text,
         filename=file.filename or "document.pdf",
         session_user_role=user_role,
         session_user_id=user_id,
         session_user_name=user_name,
+        pdf_bytes=body,
+        download_base_url=download_base,
     )
 
     classification = analyzer_result.get("classification", {})
@@ -481,6 +490,9 @@ async def chat_file_upload_endpoint(
             f"(due: {save_info.get('due_date', 'N/A')[:10]}). "
             f"{save_info.get('students_count', 0)} student(s) can now see it."
         )
+        dl = analyzer_result.get("download_signed_url") or save_info.get("download_signed_url")
+        if dl:
+            reply_parts.append(f"\n🔗 **Download full assignment PDF (signed link):**\n{dl}")
 
     # Student submission recorded?
     if analyzer_result.get("submission_recorded"):
@@ -494,6 +506,11 @@ async def chat_file_upload_endpoint(
         )
         if sub_info.get("submission_updated"):
             reply_parts.append("✅ Your assignment status has been updated to **submitted**.")
+        dl_sub = analyzer_result.get("submission_download_signed_url") or sub_info.get(
+            "student_submission_signed_url"
+        )
+        if dl_sub:
+            reply_parts.append(f"\n🔗 **Your submitted PDF (signed link):**\n{dl_sub}")
         if sub_info.get("teacher_email"):
             reply_parts.append(f"📧 **{teacher}** will be notified about your submission.")
 

@@ -7,10 +7,10 @@ Supports role-based access control (Student, Teacher, Admin).
 
 import redis
 from datetime import datetime, timedelta
-from typing import Optional, Literal
+from typing import Any, Optional
 from enum import Enum
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
 from pymongo import MongoClient
 from bson import ObjectId
@@ -20,8 +20,16 @@ from fastapi.security import OAuth2PasswordBearer
 from config import get_settings
 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login/form")
+
+
+def _email_lookup_values(email: str) -> list[str]:
+    """Exact + lower-case variants so login matches seeded emails reliably."""
+    e = (email or "").strip()
+    if not e:
+        return []
+    low = e.lower()
+    return list(dict.fromkeys([e, low]))
 
 
 class UserRole(str, Enum):
@@ -29,6 +37,7 @@ class UserRole(str, Enum):
     STUDENT = "student"
     TEACHER = "teacher"
     ADMIN = "admin"
+    SUPERADMIN = "superadmin"
 
 
 class Token(BaseModel):
@@ -93,44 +102,117 @@ class AuthService:
             serverSelectionTimeoutMS=15_000,
         )
         self.db = self.mongo_client[self.settings.mongodb_database]
-    
-    def verify_password(self, plain_password: str, hashed_password: str) -> bool:
-        """Verify a password against its hash."""
-        return pwd_context.verify(plain_password, hashed_password)
-    
+
+    @staticmethod
+    def _password_hash_bytes(hashed_password: Any) -> Optional[bytes]:
+        """Bcrypt hashes as str, bytes, or BSON Binary — ``str(binary)`` breaks checkpw."""
+        if hashed_password is None:
+            return None
+        if isinstance(hashed_password, str):
+            return hashed_password.encode("utf-8")
+        if isinstance(hashed_password, (bytes, bytearray)):
+            return bytes(hashed_password)
+        try:
+            return bytes(hashed_password)
+        except Exception:
+            return None
+
+    def _resolve_stored_password(self, user: dict) -> Any:
+        """
+        Portal profile docs often omit secrets: password lives on ``users`` via ``user_id``.
+        """
+        for key in ("password", "password_hash"):
+            v = user.get(key)
+            if v is not None and v != "":
+                return v
+        uid = user.get("user_id")
+        if uid is None:
+            return None
+        try:
+            uoid = uid if isinstance(uid, ObjectId) else ObjectId(str(uid))
+        except Exception:
+            return None
+        linked = self.db["users"].find_one({"_id": uoid})
+        if not linked:
+            return None
+        for key in ("password", "password_hash"):
+            v = linked.get(key)
+            if v is not None and v != "":
+                return v
+        return None
+
+    def verify_password(self, plain_password: str, hashed_password: Any) -> bool:
+        """Verify against a bcrypt hash (seed scripts and this service use the ``bcrypt`` package)."""
+        hp = self._password_hash_bytes(hashed_password)
+        if not hp:
+            return False
+        try:
+            return bcrypt.checkpw(plain_password.encode("utf-8"), hp)
+        except Exception:
+            return False
+
     def hash_password(self, password: str) -> str:
-        """Hash a password."""
-        return pwd_context.hash(password)
+        """Create a bcrypt hash compatible with ``verify_password`` and Mongo seed data."""
+        return bcrypt.hashpw(
+            password.encode("utf-8"),
+            bcrypt.gensalt(),
+        ).decode("utf-8")
     
     def get_user_by_email(self, email: str) -> tuple[Optional[dict], Optional[str]]:
         """
         Find user by email across all collections.
         Returns (user_dict, role) or (None, None) if not found.
         """
-        student = self.db["students"].find_one({"email": email})
+        em = _email_lookup_values(email)
+        if not em:
+            return None, None
+
+        superadmin = self.db["superadmins"].find_one({"email": {"$in": em}})
+        if superadmin:
+            return superadmin, UserRole.SUPERADMIN.value
+
+        # Legacy seed: superuser only in `users` (see new_dummy _data.py)
+        legacy_super = self.db["users"].find_one(
+            {"email": {"$in": em}, "role": {"$in": ["superuser", "superadmin"]}}
+        )
+        if legacy_super:
+            return legacy_super, UserRole.SUPERADMIN.value
+
+        student = self.db["students"].find_one({"email": {"$in": em}})
         if student:
             return student, UserRole.STUDENT.value
-        
-        teacher = self.db["teachers"].find_one({"email": email})
+
+        teacher = self.db["teachers"].find_one({"email": {"$in": em}})
         if teacher:
             return teacher, UserRole.TEACHER.value
-        
-        admin = self.db["admins"].find_one({"email": email})
+
+        admin = self.db["admins"].find_one({"email": {"$in": em}})
         if admin:
             return admin, UserRole.ADMIN.value
-        
+
         return None, None
     
     def get_user_by_id(self, user_id: str, role: str) -> Optional[dict]:
         """Find user by ID and role."""
         try:
+            oid = ObjectId(user_id)
+        except Exception:
+            return None
+        try:
+            if role == UserRole.SUPERADMIN.value:
+                doc = self.db["superadmins"].find_one({"_id": oid})
+                if doc:
+                    return doc
+                return self.db["users"].find_one(
+                    {"_id": oid, "role": {"$in": ["superuser", "superadmin"]}}
+                )
             collection_map = {
                 UserRole.STUDENT.value: "students",
                 UserRole.TEACHER.value: "teachers",
-                UserRole.ADMIN.value: "admins"
+                UserRole.ADMIN.value: "admins",
             }
             collection = collection_map.get(role, "students")
-            return self.db[collection].find_one({"_id": ObjectId(user_id)})
+            return self.db[collection].find_one({"_id": oid})
         except Exception:
             return None
     
@@ -157,15 +239,15 @@ class AuthService:
         
         if not user:
             return None, None
-        
-        stored_password = user.get("password")
-        if stored_password:
+
+        stored_password = self._resolve_stored_password(user)
+        if stored_password is not None:
             if not self.verify_password(password, stored_password):
                 return None, None
         else:
             if password != "password123":
                 return None, None
-        
+
         return user, role
     
     def create_access_token(
@@ -440,6 +522,40 @@ async def get_current_teacher(
         courses=teacher.get("assigned_course_codes")
         or teacher.get("courses")
         or [],
+    )
+
+
+async def get_current_superadmin(
+    token: str = Depends(oauth2_scheme),
+    auth_service: AuthService = Depends(get_auth_service)
+) -> UserAuth:
+    """Superadmin / superuser — full portal privileges; actions must be audit-logged."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    token_data = auth_service.verify_token(token)
+    if token_data is None:
+        raise credentials_exception
+
+    if token_data.role != UserRole.SUPERADMIN.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Superadmin role required.",
+        )
+
+    user = auth_service.get_user_by_id(token_data.user_id, token_data.role)
+    if user is None:
+        raise credentials_exception
+
+    return UserAuth(
+        user_id=str(user["_id"]),
+        email=user.get("email", ""),
+        full_name=user.get("full_name", "Unknown"),
+        role=UserRole.SUPERADMIN.value,
+        department=user.get("department", "") or "System",
     )
 
 

@@ -164,7 +164,12 @@ async def login(
             or user.get("courses")
             or [],
         })
-    
+    elif role == UserRole.SUPERADMIN.value:
+        user_info.update({
+            "employee_id": user.get("employee_id", ""),
+            "designation": user.get("designation", "") or "Superadmin",
+        })
+
     return LoginResponse(
         access_token=tokens.access_token,
         refresh_token=tokens.refresh_token,

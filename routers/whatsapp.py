@@ -28,12 +28,21 @@ from services.whatsapp_service import (
     send_reply,
     mark_as_read,
     lookup_user_by_phone,
+    download_whatsapp_media,
 )
 from services.chat_service import ChatService, get_chat_service
+from services.document_analyzer import handle_document_upload
+from services.pdf_assignment_extract import _extract_pdf_text
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/whatsapp", tags=["WhatsApp"])
+
+
+def _whatsapp_download_base() -> str:
+    from services.assignment_upload_service import effective_assignment_download_base
+
+    return effective_assignment_download_base(None)
 
 # In-memory map: phone → session_id (so we can resume conversations)
 _phone_sessions: dict[str, str] = {}
@@ -102,19 +111,39 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
     if not msg:
         return {"status": "ignored"}
 
-    log.info(
-        "📱 WhatsApp message from %s (%s): %s",
-        msg["from_phone"], msg["sender_name"], msg["text"][:100],
-    )
-
-    # Process in background (Meta wants fast 200 OK)
-    background_tasks.add_task(
-        _process_whatsapp_message,
-        from_phone=msg["from_phone"],
-        sender_name=msg["sender_name"],
-        message_id=msg["message_id"],
-        text=msg["text"],
-    )
+    mtype = msg.get("message_type", "text")
+    if mtype == "document":
+        log.info(
+            "📱 WhatsApp document from %s (%s) file=%s",
+            msg["from_phone"],
+            msg["sender_name"],
+            msg.get("filename"),
+        )
+        background_tasks.add_task(
+            _process_whatsapp_document,
+            from_phone=msg["from_phone"],
+            sender_name=msg["sender_name"],
+            message_id=msg["message_id"],
+            media_id=msg["media_id"],
+            mime_type=msg.get("mime_type") or "",
+            filename=msg.get("filename") or "document.pdf",
+            caption=msg.get("caption") or "",
+        )
+    else:
+        preview = (msg.get("text") or "")[:100]
+        log.info(
+            "📱 WhatsApp message from %s (%s): %s",
+            msg["from_phone"],
+            msg["sender_name"],
+            preview,
+        )
+        background_tasks.add_task(
+            _process_whatsapp_message,
+            from_phone=msg["from_phone"],
+            sender_name=msg["sender_name"],
+            message_id=msg["message_id"],
+            text=msg.get("text") or "",
+        )
 
     return {"status": "received"}
 
@@ -122,6 +151,141 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
 # ═══════════════════════════════════════════════════════════════════════
 # BACKGROUND PROCESSING
 # ═══════════════════════════════════════════════════════════════════════
+
+def _process_whatsapp_document(
+    from_phone: str,
+    sender_name: str,
+    message_id: str,
+    media_id: str,
+    mime_type: str,
+    filename: str,
+    caption: str,
+) -> None:
+    """
+    Teacher/student sends a PDF on WhatsApp → download, extract text, run the same
+    NLP + DB pipeline as web chat upload (assignments, submissions, emails, WhatsApp).
+    """
+    mark_as_read(message_id)
+    user = lookup_user_by_phone(from_phone)
+    if not user:
+        send_reply(
+            from_phone,
+            message_id,
+            "I couldn't find your phone in our system. Register your WhatsApp number "
+            "on your IBA profile, then try again.",
+        )
+        return
+
+    role = user["role"]
+    if role not in ("teacher", "student"):
+        send_reply(
+            from_phone,
+            message_id,
+            "Document upload from WhatsApp is only supported for teachers and students.",
+        )
+        return
+
+    try:
+        file_bytes, graph_mime = download_whatsapp_media(media_id)
+    except Exception as exc:
+        log.error("WhatsApp media download failed: %s", exc)
+        send_reply(from_phone, message_id, "Could not download your file. Please try again.")
+        return
+
+    effective_mime = (mime_type or graph_mime or "").lower()
+    fn_lower = (filename or "").lower()
+    if "pdf" not in effective_mime and not fn_lower.endswith(".pdf"):
+        send_reply(
+            from_phone,
+            message_id,
+            "Please send an assignment as a *PDF* file so I can read and register it.",
+        )
+        return
+
+    try:
+        text = _extract_pdf_text(file_bytes)
+    except Exception as exc:
+        log.error("WhatsApp PDF extract failed: %s", exc)
+        send_reply(from_phone, message_id, f"Could not read this PDF: {exc}")
+        return
+
+    if not (text or "").strip():
+        send_reply(
+            from_phone,
+            message_id,
+            "This PDF has no readable text (it may be scanned). Use a text-based PDF or the web portal.",
+        )
+        return
+
+    combined = text
+    if caption.strip():
+        combined = f"[Teacher/student note from WhatsApp]\n{caption.strip()}\n\n{text}"
+
+    try:
+        result = handle_document_upload(
+            text=combined,
+            filename=filename or "document.pdf",
+            session_user_role=role,
+            session_user_id=user["user_id"],
+            session_user_name=user.get("full_name") or sender_name or "User",
+            source_tag="whatsapp_upload",
+            pdf_bytes=file_bytes,
+            download_base_url=_whatsapp_download_base(),
+        )
+    except Exception as exc:
+        log.error("WhatsApp document pipeline error: %s", exc)
+        send_reply(from_phone, message_id, "Something went wrong processing your document. Try again later.")
+        return
+
+    cls = result.get("classification") or {}
+    doc_type = cls.get("document_type", "other")
+    summary = cls.get("summary", "")
+
+    lines = [f"📄 Document type: *{doc_type}*", ""]
+    if summary:
+        lines.append(summary[:1500])
+        lines.append("")
+
+    if result.get("assignment_saved"):
+        det = result.get("assignment_save_details") or {}
+        lines.append(
+            f"✅ Saved assignment for *{det.get('course_code', '')}* — "
+            f"{det.get('students_count', 0)} students updated in the system."
+        )
+        ws = result.get("whatsapp_students_notified", 0)
+        if ws:
+            lines.append(f"📱 WhatsApp sent to {ws} students (with phone on file).")
+        dl = result.get("download_signed_url") or det.get("download_signed_url")
+        if dl:
+            lines.append(f"🔗 Your download link (full PDF):\n{dl}")
+    elif result.get("submission_recorded"):
+        sub = result.get("submission_details") or {}
+        if sub.get("submission_updated"):
+            lines.append(
+                f"✅ Submission recorded for *{sub.get('course_code', '')}*: "
+                f"{sub.get('assignment_title', '')}"
+            )
+        else:
+            lines.append(
+                "⚠️ No matching pending assignment was updated. Check course code or use the portal."
+            )
+        dl_sub = result.get("submission_download_signed_url") or sub.get(
+            "student_submission_signed_url"
+        )
+        if dl_sub:
+            lines.append(f"🔗 Your submitted PDF:\n{dl_sub}")
+        if result.get("whatsapp_teacher_notified"):
+            lines.append("📱 Your teacher was notified on WhatsApp.")
+    else:
+        lines.append("ℹ️ No assignment/submission row was changed. If this was meant as a new task, say it's an assignment in the PDF text.")
+
+    if result.get("email_sent"):
+        lines.append("📧 Email notification sent.")
+    elif result.get("email_configured") is False:
+        lines.append("(Email not configured on server.)")
+
+    send_reply(from_phone, message_id, "\n".join(lines).strip())
+
 
 def _process_whatsapp_message(
     from_phone: str,
@@ -201,9 +365,11 @@ def _process_whatsapp_message(
         send_reply(from_phone, message_id, welcome)
 
     # 4. Run through AI pipeline
+    intent = "?"
     try:
         response = service.chat(session_id=session_id, message=text)
         reply_text = response.message
+        intent = getattr(response, "intent", "?")
     except Exception as exc:
         log.error("WhatsApp AI processing error for %s: %s", from_phone, exc)
         reply_text = (
@@ -216,7 +382,9 @@ def _process_whatsapp_message(
 
     log.info(
         "📱 WhatsApp reply sent to %s | intent=%s | %d chars",
-        from_phone, getattr(response, 'intent', '?'), len(reply_text),
+        from_phone,
+        intent,
+        len(reply_text),
     )
 
 

@@ -168,6 +168,9 @@ def get_permission_rule_for_role(role: str) -> RolePermissionRule:
 
 
 def check_user_permission(query: str, role: str) -> Optional[str]:
+    r = (role or "").strip().lower()
+    if r in ("superadmin", "superuser"):
+        return None
     rule = get_permission_rule_for_role(role)
     if rule.matches_denied_query(query):
         return rule.deny_message

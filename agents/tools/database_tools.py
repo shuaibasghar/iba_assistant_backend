@@ -4,12 +4,19 @@ These tools allow agents to query the MongoDB database.
 """
 
 from crewai.tools import BaseTool
-from typing import Type, Any
+from typing import Any, Type
 from pydantic import BaseModel, Field
 from pymongo import MongoClient
 from bson import ObjectId
-from datetime import datetime
+from datetime import datetime, timezone
 from config import get_settings
+from services.assignment_upload_service import (
+    assignment_has_downloadable_pdf,
+    build_signed_assignment_url,
+    mint_assignment_download_token,
+    teacher_submissions_overview,
+)
+from services.portal_update_service import portal_record_update
 
 
 def get_db():
@@ -64,6 +71,23 @@ def find_teacher(db, teacher_id: str):
     return db["teachers"].find_one({"email": teacher_id})
 
 
+def _assignment_upload_recency_ts(a: dict) -> float:
+    """When the assignment was published (created_at), else BSON ObjectId time."""
+    ca = a.get("created_at")
+    if ca is not None:
+        if getattr(ca, "tzinfo", None) is None:
+            ca = ca.replace(tzinfo=timezone.utc)
+        return float(ca.timestamp())
+    oid = a.get("_id")
+    if isinstance(oid, ObjectId):
+        return float(oid.generation_time.replace(tzinfo=timezone.utc).timestamp())
+    return 0.0
+
+
+def _strip_internal_assignment_fields(d: dict) -> dict:
+    return {k: v for k, v in d.items() if k != "_recency_ts"}
+
+
 def find_admin(db, admin_id: str):
     """Find an admin document by ObjectId, employee_id, or email."""
     if len(admin_id) == 24:
@@ -77,6 +101,18 @@ def find_admin(db, admin_id: str):
     if a:
         return a
     return db["admins"].find_one({"email": admin_id})
+
+
+def find_superadmin(db, user_id: str):
+    """Find a superadmin document by ObjectId or email."""
+    if len(user_id) == 24:
+        try:
+            s = db["superadmins"].find_one({"_id": ObjectId(user_id)})
+            if s:
+                return s
+        except Exception:
+            pass
+    return db["superadmins"].find_one({"email": user_id})
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -94,6 +130,55 @@ class StudentSemesterInput(BaseModel):
     semester: int | None = Field(None, description="Specific semester to query (optional)")
 
 
+class TeacherSubmissionsInput(BaseModel):
+    """Teacher portal user id plus optional assignment to filter the roster."""
+    teacher_id: str = Field(
+        ...,
+        description="MongoDB teachers._id string from session (same as query_teacher_teaching)",
+    )
+    assignment_id: str | None = Field(
+        None,
+        description="Optional assignments._id to list only that task's students; omit for all your assignments",
+    )
+
+
+class PortalRecordUpdateInput(BaseModel):
+    """Permission-checked portal writes (grades today; more entity.operation pairs later)."""
+
+    actor_user_id: str = Field(..., description="Logged-in user's Mongo _id (teacher id from session)")
+    actor_role: str = Field(
+        "teacher",
+        description="Portal role; must be allowed for this entity.operation (e.g. teacher for grade)",
+    )
+    entity: str = Field(
+        ...,
+        description="Resource type, e.g. assignment_submission",
+    )
+    operation: str = Field(
+        ...,
+        description="Action, e.g. grade (sets marks_obtained, feedback, graded, graded_at)",
+    )
+    submission_id: str | None = Field(
+        None,
+        description="assignment_submissions._id (preferred) — XOR with assignment_id+student_roll",
+    )
+    assignment_id: str | None = Field(None, description="With student_roll if no submission_id")
+    student_roll: str | None = Field(None, description="e.g. CS-2024-009")
+    marks_obtained: float | None = Field(None, description="For operation=grade (required unless in updates_json)")
+    feedback: str | None = Field(None, max_length=8000)
+    updates_json: str | None = Field(
+        None,
+        description='Optional JSON object merged into payload, e.g. {"marks_obtained": 85, "feedback": "..."}',
+    )
+    confirmed: bool = Field(
+        False,
+        description=(
+            "For grade/delete: false first — if the tool returns needs_confirmation, ask the user yes/no; "
+            "on yes, call again with true. Superadmin may omit (treated as bypass in backend)."
+        ),
+    )
+
+
 class CourseQueryInput(BaseModel):
     """Input schema for course-specific queries."""
     student_id: str = Field(..., description="The MongoDB ObjectId of the student")
@@ -108,7 +193,7 @@ class StudentInfoTool(BaseTool):
     name: str = "get_student_info"
     description: str = """
     Get basic profile: student (roll, semester, CGPA), teacher (employee ID,
-    courses taught), or admin (role, department).
+    courses taught), admin (role, department), or superadmin.
     """
     args_schema: Type[BaseModel] = StudentIdInput
 
@@ -158,6 +243,17 @@ class StudentInfoTool(BaseTool):
                 "employee_id": admin.get("employee_id", ""),
             }
 
+        superadmin = find_superadmin(db, student_id)
+        if superadmin:
+            return {
+                "user_role": "superadmin",
+                "superadmin_id": str(superadmin["_id"]),
+                "full_name": superadmin.get("full_name"),
+                "email": superadmin.get("email"),
+                "department": superadmin.get("department", "") or "System",
+                "employee_id": superadmin.get("employee_id", ""),
+            }
+
         return {"error": f"User not found with identifier: {student_id}"}
 
 
@@ -165,11 +261,60 @@ class StudentInfoTool(BaseTool):
 # Assignment Query Tool
 # ═══════════════════════════════════════════════════════════════════
 
+class PortalDownloadLinkInput(BaseModel):
+    """Resolve authorized portal PDF download links from the user's natural-language request."""
+
+    user_id: str = Field(
+        ...,
+        description="MongoDB ObjectId of the logged-in user (task context: student_id; for faculty, same field holds teacher _id).",
+    )
+    user_role: str = Field(
+        ...,
+        description="Exactly 'student' or 'teacher' for the current session.",
+    )
+    search_query: str = Field(
+        "",
+        description=(
+            "Their words: topic, course code, assignment/handout/syllabus name, or vague reference "
+            "('wo PDF', 'us document ka link'). Empty string = most recent downloadable materials they may access."
+        ),
+    )
+
+
+class PortalDownloadLinkTool(BaseTool):
+    name: str = "find_portal_downloads"
+    description: str = """
+    Use whenever the user wants a downloadable file, PDF, or shareable link from the portal
+    in natural language: assignment brief, course handout, class material, syllabus-style PDF,
+    'document bhejo', 'PDF do', 'link send karo', 'WhatsApp pe bhejo', 'file share karo',
+    or any similar request—not only the word "assignment".
+    Returns time-limited signed URLs for PDFs they are authorized to access (students: enrolled
+    courses; teachers: materials they published). These links are for course/portal PDFs only:
+    they are NOT transcripts, enrollment certificates, or admit cards—if the user clearly means
+    those official documents, use the records/fee tools instead (or explain the difference gently).
+    Always pass search_query distilled from their message; use "" if they only want the latest links.
+    """
+    args_schema: Type[BaseModel] = PortalDownloadLinkInput
+
+    def _run(self, user_id: str, user_role: str, search_query: str = "") -> dict:
+        from services.assignment_upload_service import get_authorized_portal_downloads
+
+        return get_authorized_portal_downloads(
+            user_id=user_id,
+            user_role=user_role,
+            search_query=search_query or "",
+            limit=5,
+        )
+
+
 class AssignmentQueryTool(BaseTool):
     name: str = "query_assignments"
     description: str = """
-    Query assignments for a student. Returns pending, submitted, and overdue 
-    assignments with due dates and marks. Can filter by semester.
+    Query assignments for a student. Returns pending, upcoming, overdue, and submitted
+    work. Lists are sorted with the most recently *posted* assignment first within each
+    bucket (uses created_at / upload time, not due date). For "latest/newest/last pending"
+    questions, use **newest_incomplete_assignment** (not-yet-submitted work, newest upload first).
+    **assignment_brief_pdf_url** is a time-limited portal link when a brief PDF exists.
     """
     args_schema: Type[BaseModel] = StudentSemesterInput
 
@@ -182,6 +327,7 @@ class AssignmentQueryTool(BaseTool):
             return {"error": f"Student not found with identifier: {student_id}"}
         
         student_oid = student["_id"]
+        sid_str = str(student_oid)
         current_semester = semester or student.get("semester")
         dept = student.get("department")
 
@@ -205,6 +351,18 @@ class AssignmentQueryTool(BaseTool):
         submission_map = {str(s["assignment_id"]): s for s in submissions}
         
         now = datetime.now()
+        if now.tzinfo is None:
+            now_utc = now.replace(tzinfo=timezone.utc)
+        else:
+            now_utc = now.astimezone(timezone.utc)
+
+        def due_cmp(due) -> datetime | None:
+            if due is None:
+                return None
+            if getattr(due, "tzinfo", None) is None:
+                return due.replace(tzinfo=timezone.utc)
+            return due.astimezone(timezone.utc)
+
         result = {
             "pending": [],
             "submitted": [],
@@ -216,18 +374,33 @@ class AssignmentQueryTool(BaseTool):
             aid = str(a["_id"])
             course = course_map.get(str(a["course_id"]), {})
             sub = submission_map.get(aid)
-            
-            assignment_info = {
-                "assignment_id": str(a["_id"]),
+            rec_ts = _assignment_upload_recency_ts(a)
+            posted_iso = datetime.fromtimestamp(rec_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+            assignment_info: dict[str, Any] = {
+                "assignment_id": aid,
                 "title": a.get("title"),
                 "course_name": course.get("course_name"),
                 "course_code": a.get("course_code"),
                 "due_date": a.get("due_date").strftime("%Y-%m-%d %H:%M") if a.get("due_date") else None,
                 "total_marks": a.get("total_marks"),
-                "has_pdf_brief": bool(a.get("attachment_stored_name")),
+                "has_pdf_brief": assignment_has_downloadable_pdf(a),
                 "source": a.get("source"),
+                "assignment_posted_at": posted_iso,
+                "_recency_ts": rec_ts,
+                "assignment_brief_pdf_url": None,
             }
+            if assignment_info["has_pdf_brief"]:
+                try:
+                    tok = mint_assignment_download_token(sid_str, "student", aid)
+                    assignment_info["assignment_brief_pdf_url"] = build_signed_assignment_url(
+                        tok, None
+                    )
+                except Exception:
+                    assignment_info["assignment_brief_pdf_url"] = None
             
+            due_u = due_cmp(a.get("due_date"))
+
             if sub:
                 assignment_info["status"] = sub.get("status")
                 assignment_info["marks_obtained"] = sub.get("marks_obtained")
@@ -237,28 +410,62 @@ class AssignmentQueryTool(BaseTool):
                 if sub.get("status") == "submitted":
                     result["submitted"].append(assignment_info)
                 elif sub.get("status") == "overdue":
+                    assignment_info["bucket"] = "overdue"
                     result["overdue"].append(assignment_info)
                 else:
-                    if a.get("due_date") and a.get("due_date") > now:
+                    if due_u and due_u > now_utc:
+                        assignment_info["bucket"] = "pending"
                         result["pending"].append(assignment_info)
                     else:
+                        assignment_info["bucket"] = "overdue"
                         result["overdue"].append(assignment_info)
             else:
-                if a.get("due_date") and a.get("due_date") > now:
-                    days_left = (a.get("due_date") - now).days
+                if due_u and due_u > now_utc:
+                    days_left = (due_u - now_utc).days
                     assignment_info["days_until_due"] = days_left
                     if days_left > 7:
+                        assignment_info["bucket"] = "upcoming"
                         result["upcoming"].append(assignment_info)
                     else:
+                        assignment_info["bucket"] = "pending"
                         result["pending"].append(assignment_info)
                 else:
+                    assignment_info["bucket"] = "overdue"
                     result["overdue"].append(assignment_info)
-        
+
+        def sort_newest_upload_first(lst: list) -> None:
+            lst.sort(key=lambda x: x.get("_recency_ts", 0), reverse=True)
+
+        sort_newest_upload_first(result["pending"])
+        sort_newest_upload_first(result["upcoming"])
+        sort_newest_upload_first(result["overdue"])
+
+        incomplete_merged = result["pending"] + result["upcoming"] + result["overdue"]
+        incomplete_merged.sort(key=lambda x: x.get("_recency_ts", 0), reverse=True)
+        result["incomplete_assignments_newest_first"] = [
+            _strip_internal_assignment_fields({**x}) for x in incomplete_merged
+        ]
+        result["newest_incomplete_assignment"] = (
+            result["incomplete_assignments_newest_first"][0]
+            if result["incomplete_assignments_newest_first"]
+            else None
+        )
+
+        for lst in (result["pending"], result["upcoming"], result["overdue"], result["submitted"]):
+            for i, row in enumerate(lst):
+                lst[i] = _strip_internal_assignment_fields(row)
+        result["guidance"] = (
+            'For "last/latest/most recent pending" (newest on the portal), answer using '
+            "newest_incomplete_assignment — that is by assignment upload time, not due date. "
+            "When the student wants the PDF, include assignment_brief_pdf_url from that row."
+        )
+
         result["summary"] = {
             "total_pending": len(result["pending"]),
             "total_submitted": len(result["submitted"]),
             "total_overdue": len(result["overdue"]),
             "total_upcoming": len(result["upcoming"]),
+            "total_incomplete": len(result["incomplete_assignments_newest_first"]),
         }
         
         return result
@@ -863,6 +1070,7 @@ class TeacherTeachingQueryTool(BaseTool):
             dd = a.get("due_date")
             items.append(
                 {
+                    "assignment_id": str(a["_id"]),
                     "course_code": a.get("course_code"),
                     "title": a.get("title"),
                     "total_marks": a.get("total_marks"),
@@ -882,6 +1090,84 @@ class TeacherTeachingQueryTool(BaseTool):
         }
 
 
+class TeacherSubmissionRosterTool(BaseTool):
+    name: str = "query_teacher_submission_roster"
+    description: str = """
+    Faculty-only: full roster per assignment — each student's status, submitted_at, marks,
+    and **submitted_work_pdf_url** (time-limited) for the file they **turned in** — NOT the
+    assignment brief. For the brief/handout PDF use find_portal_downloads instead.
+    Pass teacher user id from session; assignment_id from query_teacher_teaching to focus one task.
+    """
+    args_schema: Type[BaseModel] = TeacherSubmissionsInput
+
+    def _run(self, teacher_id: str, assignment_id: str | None = None) -> dict:
+        try:
+            return teacher_submissions_overview(teacher_id, assignment_id)
+        except PermissionError as e:
+            return {"error": str(e)}
+        except ValueError as e:
+            return {"error": str(e)}
+
+
+class PortalRecordUpdateTool(BaseTool):
+    name: str = "portal_record_update"
+    description: str = """
+    Permission-checked update to portal data. Each entity.operation checks the actor's role and
+    row ownership before writing (superadmin skips ownership on grade).
+
+    Current support:
+    - entity=assignment_submission, operation=grade — teacher must be submission.teacher_id (unless superadmin).
+      Provide submission_id OR assignment_id+student_roll; marks_obtained required; feedback optional.
+      Also accepts updates_json for the same fields. If needs_confirmation is returned, ask the user
+      to confirm (yes/no) then call again with confirmed=true.
+
+    - entity=assignment_submission, operation=delete — superadmin only; removes row and stored PDF.
+      Same lookup as grade; requires confirmation for non-superadmin (always denied); superadmin is audited.
+
+    For grading, prefer submission_id from query_teacher_submission_roster.
+    """
+    args_schema: Type[BaseModel] = PortalRecordUpdateInput
+
+    def _run(
+        self,
+        actor_user_id: str,
+        actor_role: str = "teacher",
+        entity: str = "",
+        operation: str = "",
+        submission_id: str | None = None,
+        assignment_id: str | None = None,
+        student_roll: str | None = None,
+        marks_obtained: float | None = None,
+        feedback: str | None = None,
+        updates_json: str | None = None,
+        confirmed: bool = False,
+    ) -> dict:
+        payload: dict = {}
+        if marks_obtained is not None:
+            payload["marks_obtained"] = marks_obtained
+        if feedback is not None:
+            payload["feedback"] = feedback
+        try:
+            return portal_record_update(
+                actor_role=actor_role,
+                actor_user_id=actor_user_id,
+                entity=entity,
+                operation=operation,
+                lookup={
+                    "submission_id": submission_id,
+                    "assignment_id": assignment_id,
+                    "student_roll": student_roll,
+                },
+                payload=payload,
+                updates_json=updates_json,
+                confirmed=confirmed,
+            )
+        except PermissionError as e:
+            return {"error": str(e), "permission_denied": True}
+        except ValueError as e:
+            return {"error": str(e)}
+
+
 class AnnouncementQueryTool(BaseTool):
     name: str = "query_announcements"
     description: str = """
@@ -893,11 +1179,17 @@ class AnnouncementQueryTool(BaseTool):
     def _run(self, student_id: str) -> dict:
         db = get_db()
         admin = find_admin(db, student_id)
+        superadmin = find_superadmin(db, student_id) if not admin else None
         student = find_student(db, student_id)
-        teacher = find_teacher(db, student_id) if not student and not admin else None
+        teacher = (
+            find_teacher(db, student_id)
+            if not student and not admin and not superadmin
+            else None
+        )
 
-        if admin:
-            display_name = admin.get("full_name", "Admin")
+        if admin or superadmin:
+            doc = admin if admin else superadmin
+            display_name = doc.get("full_name", "Admin")
             raw = list(
                 db["announcements"]
                 .find({"is_active": True})

@@ -222,14 +222,33 @@ for fn,un,dept,role in staff_raw:
     db["users"].update_one({"_id":uid},{"$set":{"staff_id":sid}})
     staff_ids[un] = sid
 
-# Superuser
-db["users"].insert_one({
-    "username":"superadmin","email":f"admin@{DOMAIN}",
-    "password_hash":hp("SuperAdmin@123"),"role":"superuser",
-    "is_active":True,"created_at":ago(600),"last_login":ago(1),
-    "university":UNI_NAME
+# Superadmin — JWT + portal use role string `superadmin` (not legacy `superuser`).
+sa_email = f"admin@{DOMAIN}"
+sa_pw_hash = hp("SuperAdmin@123")
+sa_uid = db["users"].insert_one({
+    "username": "superadmin",
+    "email": sa_email,
+    "password_hash": sa_pw_hash,
+    "role": "superadmin",
+    "is_active": True,
+    "created_at": ago(600),
+    "last_login": ago(1),
+    "university": UNI_NAME,
+}).inserted_id
+db["superadmins"].insert_one({
+    "user_id": sa_uid,
+    "full_name": "System Superadmin",
+    "email": sa_email,
+    "employee_id": "SUP-001",
+    "department": "System",
+    "password_hash": sa_pw_hash,
+    "designation": "Superadmin",
+    "role": "superadmin",
+    "status": "active",
+    "university": UNI_NAME,
+    "created_at": ago(600),
 })
-print(f"   ✅  {len(staff_raw)} staff + 1 superadmin.\n")
+print(f"   ✅  {len(staff_raw)} staff + 1 superadmin (users + superadmins).\n")
 
 # ════════════════════════════════════════════════════════════════════════
 # 5. STUDENTS (60 students across departments)
@@ -949,10 +968,10 @@ roles = [
         "description":"IT staff — system and user management"
     },
     {
-        "role":"superuser",
-        "permissions":["all"],
-        "fee_blocked_actions":[],
-        "description":"Super administrator — full system access"
+        "role": "superadmin",
+        "permissions": ["all"],
+        "fee_blocked_actions": [],
+        "description": "Super administrator — full system access",
     },
 ]
 db["roles"].insert_many(roles)
@@ -1112,7 +1131,7 @@ print(f"""
 
 👤  CREDENTIALS
 {'─'*60}
-  superadmin       / SuperAdmin@123   → superuser
+  superadmin       / SuperAdmin@123   → role superadmin (JWT + portal)
   gmshaikn         / Prof@123!        → teacher (CS HOD)
   tmahmood         / Prof@123!        → teacher (AI HOD)
   kmehmood         / Prof@123!        → teacher (BBA HOD)

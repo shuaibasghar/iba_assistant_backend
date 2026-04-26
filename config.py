@@ -48,7 +48,15 @@ class Settings(BaseSettings):
 
     # Assignment PDF uploads (relative to backend directory)
     assignment_upload_subdir: str = "uploads/assignments"
+    # Student submission PDFs (turned-in work)
+    submission_upload_subdir: str = "uploads/submissions"
     assignment_max_upload_mb: int = 20
+    # Public API base for absolute signed download URLs (chat/email/WhatsApp). Dev default localhost; set real URL in production.
+    public_api_base_url: str = "http://localhost:8000"
+    # Short-lived signed JWT for ?token= assignment *brief* downloads (hours)
+    assignment_download_token_expire_hours: int = 168
+    # Submitted-work PDFs (?token= on /assignments/submission/signed); often needs longer for faculty review
+    submission_download_token_expire_hours: int = 336
 
     # Generic file receive (e.g. POST /upload) — any type, stored locally
     upload_receive_subdir: str = "uploads/received"

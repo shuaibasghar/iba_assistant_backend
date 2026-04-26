@@ -1,6 +1,14 @@
 # ═══════════════════════════════════════════════════════════════════
 # IBA Sukkur University Portal - Task Definitions
 # ═══════════════════════════════════════════════════════════════════
+#
+# Ambiguous requests: If you cannot tell what they want, do NOT guess or invent
+# details. Ask ONE short, polite clarifying question in their language (English,
+# Roman Urdu, or mixed), e.g.:
+#   "Theek se bata dein, aap ko exactly kya chahiye?"
+#   "Please tell me specifically what you need — for example course code, document
+#   type, or whether you want a file/link vs status only."
+# Then wait for a clear answer before acting.
 
 route_query_task:
     description: >
@@ -13,11 +21,13 @@ route_query_task:
         - Department: {department}
 
         Determine the intent and classify into one of these categories:
-        1. ASSIGNMENT - assignments, submissions, due dates, homework
+        1. ASSIGNMENT - assignments, submissions, due dates, homework, course PDFs/handouts,
+           class materials, "PDF bhejo" / "link do" when they mean coursework (not transcripts)
         2. FEE - fees, payment, dues, challan
         3. EXAM - exam schedule, dates, venues, papers, hall ticket, admit card, roll number slip
         4. GRADE - results, marks, CGPA, GPA, academic performance
-        5. DOCUMENT - transcripts, enrollment certificates, official document status
+        5. DOCUMENT - transcripts, enrollment certificates, official document status, degree,
+           "document" when they clearly mean registrar/records (not a class handout)
         6. ATTENDANCE - class attendance, shortage, percentage, 75% rule
         7. TIMETABLE - class schedule, time table, which class when, room
         8. LIBRARY - books issued, due date, fine, return
@@ -33,7 +43,8 @@ route_query_task:
         - "fees status batao" → FEE
         - "exam kab hai" / "admit card" → EXAM
         - "result batao" → GRADE
-        - "transcript chahiye" → DOCUMENT
+        - "transcript chahiye" / degree certificate / enrollment letter → DOCUMENT
+        - "CS301 ka PDF" / handout / syllabus file / assignment material → ASSIGNMENT
         - "attendance kitni hai" → ATTENDANCE
         - "time table" → TIMETABLE
         - "email bhejo" / "mail karo" → EMAIL
@@ -73,15 +84,22 @@ general_conversation_task:
           in one short paragraph.
 
         **CLARIFYING QUESTIONS - IF REQUEST IS UNCLEAR:**
-        If they ask vague questions unrelated to specific portal features, respond warmly
-        and suggest relevant portal topics they can ask about:
-        "You can ask me about fees, assignments, exams, grades, documents, attendance,
-        timetable, library, scholarships, hostel, complaints, or announcements. What can I help?"
+        If you cannot tell what they want, ask ONE focused question before doing much else:
+        Roman Urdu example: "Theek se bata dein, aap exactly kya chahte hain?"
+        English: "Please tell me specifically what you need so I can help."
+        Optionally add 1–2 examples (fees, assignment PDF, grades, transcript status, etc.).
+        If they are vague but somewhat on-topic, still ask what *specific* thing they mean
+        (e.g. "PDF link vs list of pending work?") — do not assume.
 
         You may use tools to fetch basic student_info if it helps personalize.
+        If they ask for a course PDF, file, or download link in casual wording (not transcripts),
+        use **find_portal_downloads** with user_id="{student_id}", user_role="student",
+        and search_query from their message (or "" for recent materials). Share only URLs
+        the tool returns; if none, answer naturally without inventing links.
     expected_output: >
         Plain natural language only: 2–6 short sentences the student sees in the
-        chat bubble. If unclear, suggest portal topics they can ask about.
+        chat bubble. If unclear, ask what specifically they need (Roman Urdu and/or
+        English); do not guess.
     agent: general_assistant
 
 fetch_assignments_task:
@@ -106,6 +124,11 @@ fetch_assignments_task:
           "jo abhi submit nahi" / "pending assignments only" → talk ONLY about pending
           items. Do NOT list overdue, submitted, or upcoming unless they explicitly
           asked for those too.
+        - If they ask **last / latest / newest / recent "pending" assignment** (or Roman Urdu like
+          "last pending", "naya wala", "abhi jo upload hua") → use **newest_incomplete_assignment**
+          from the tool (sort by assignment **upload/posted** time, not due date). That row may be
+          bucket `pending`, `upcoming`, or `overdue`; say the bucket briefly if useful. Include
+          **assignment_brief_pdf_url** in your reply when they want the PDF/link or when that field is present.
         - If they ask only overdue / late / missed → ONLY overdue.
         - If they ask which is CLOSEST TO DUE / about to be due → ONLY the one closest to deadline.
         - If they ask which was LAST SUBMITTED → ONLY the most recent submission, name + course only.
@@ -116,6 +139,21 @@ fetch_assignments_task:
         - If the query is vague ("assignments?"), give a short summary: counts or
           the most urgent items (pending + overdue) in 2–4 bullets, then one line:
           "Want details on submitted work or upcoming deadlines?"
+
+        **IF CONTEXT IS UNCLEAR (assignments):**
+        If you cannot tell whether they want a **download link/PDF**, a **status list**
+        (pending/overdue), **due dates only**, or something else — do NOT pick randomly.
+        Ask ONE line, e.g.: "Theek se bata dein: PDF/link chahiye ya assignments ki list/due dates?"
+        / "Please tell me specifically — do you need a file link, or which assignments and what about them?"
+
+        **PDF / LINK / FILE / "BHEJO" (portal course materials):**
+        Whenever they want something downloadable—assignment or not—(PDF, file, link, share,
+        WhatsApp, "wo document", handout, syllabus, class material): call **find_portal_downloads**
+        with user_id="{student_id}", user_role="student", and search_query = short keywords from
+        their message (or "" for recent materials). Reply naturally with the **download_url**
+        lines and labels from the tool. If nothing matches, say so helpfully (suggest trying a
+        course code or rephrasing)—never invent URLs. Official transcripts/certificates are not
+        in this tool; if they mix topics, clarify briefly.
 
         Style:
         - Short greeting (optional) + direct answer. No wall of text.
@@ -217,19 +255,32 @@ fetch_grades_task:
 process_document_request_task:
     description: >
         Process document request for student {student_name} ({roll_number}).
+        user_id for tools: {student_id}
 
         Query: "{query}"
+
+        **Two kinds of "documents" (handle naturally):**
+        1) **Course / portal PDFs** (handouts, assignment briefs, class files): If they want a
+        file, link, PDF, or "bhejo" and they do NOT clearly mean transcript/certificate/degree/
+        enrollment letter, call **find_portal_downloads** first with user_id="{student_id}",
+        user_role="student", search_query from their words. Pass exact URLs from the tool in a
+        friendly reply. If the tool returns nothing, you may briefly explain and offer next steps.
+        2) **Official records** (transcript, enrollment certificate, registrar): Use the records
+        and fee tools as below—do not pretend a portal PDF link is a transcript.
 
         **GOLDEN RULE - ANSWER ONLY WHAT WAS ASKED:**
         - Do NOT explain how to order or request documents unless asked.
         - Do NOT list all available documents.
-        - Just state the status of what they asked for.
+        - Just state the status of what they asked for (or the links they asked for).
         - Do NOT greet or add unnecessary warmth.
 
         **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
-        If they ask just "documents" or "document status" with no specifics:
-        1. Show status of most recent document request
-        2. Then ask ONE clarifying line: "Need transcript, enrollment certificate, or other specific document?"
+        If they ask just "documents" or "document" with no specifics, or you cannot tell
+        official vs class PDF: ask explicitly before relying on tools, e.g.
+        "Theek se bata dein: transcript/enrollment certificate ka status chahiye ya course ka PDF/link?"
+        / "Please tell me specifically — official transcript/certificate, or a class handout PDF?"
+        If still unclear after that, then: (1) official paperwork → recent transcript/certificate
+        status via records; (2) class material → find_portal_downloads with search_query="".
 
         Use the records tool for transcript/certificate request status (status,
         ticket_number, blocked_reason). Use the fee tool to verify payment clearance.
@@ -238,9 +289,8 @@ process_document_request_task:
         If clear:
         - Confirm document type and summarize status (issued, pending, on_hold)
     expected_output: >
-        Short, natural reply: ONLY the document status they asked for, fee
-        clearance status, and next steps if something is on hold. If vague, add one
-        clarifying question at the end.
+        Short, natural reply: ONLY what they clearly asked for (links or status), fee
+        clearance if relevant. If vague, ask one bilingual clarifying question; do not guess.
     agent: document_agent
 
 fetch_attendance_task:
@@ -434,18 +484,40 @@ teacher_portal_task:
         - Do NOT greet or add unnecessary warmth.
 
         **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If you cannot tell what they need, ask ONE line in Roman Urdu and/or English:
+        "Theek se bata dein, aap ko exactly kya chahiye?"
+        / "Please tell me specifically what you need."
         If they ask vague questions (e.g., "assignments", "students", "teaching"):
-        1. Show most recent/relevant info (e.g., latest assignment, recent submissions)
-        2. Then ask ONE clarifying line with relevant options.
+        1. Optionally show one line of most recent/relevant info if safe
+        2. Then ask with concrete options (submission counts vs PDF link vs course, etc.).
         Examples:
-        - If vague on assignments: "[Brief assignment summary] Need submission counts, specific course, or timeline?"
-        - If vague on students: "[Recent submission info] Need student list, class participation, or course roster?"
-        - If vague on announcements: "[Latest notice] Need urgent announcements, department news, or specific topic?"
+        - If vague on assignments: "[Brief summary] PDF/link chahiye ya submission counts / specific course?"
+        - If vague on students: "Student list, submissions, ya koi aur specific cheez?"
+        - If vague on announcements: "Latest notice — urgent, department, ya topic?"
 
         Use query_teacher_teaching for assignments this faculty member created and submission
-        counts. Use get_student_info for profile and assigned_course_codes. Use query_announcements
+        counts (includes assignment_id per row). Use query_teacher_submission_roster with the
+        same teacher_id and optional assignment_id when they need names, submission times,
+        or who uploaded a PDF. Use get_student_info for profile and assigned_course_codes. Use query_announcements
         for relevant campus notices. Do NOT use student fee, personal grade, hostel, library,
         scholarship, or admit-card tools.
+
+        **Portal PDF / link (any wording):** If they want the **assignment brief / handout** they
+        published: **find_portal_downloads** with user_id="{student_id}", user_role="teacher",
+        search_query from their message (or "" for recent). Use **download_url** from that tool only.
+
+        **Student's submitted work PDF** (turned-in file, submission, "unke submit ki hui file",
+        "student ka PDF", "jo unho ne upload kiya"): call **query_teacher_submission_roster** with
+        the same teacher id and the relevant **assignment_id**, then share **submitted_work_pdf_url**
+        for that student row — never use find_portal_downloads for that (that link is only the brief).
+
+        **Grading / marks / feedback** ("grade", "marks de do", "85 de do", "feedback likho"):
+        call **portal_record_update** with actor_user_id="{student_id}", actor_role="teacher",
+        entity="assignment_submission", operation="grade", **marks_obtained** (number),
+        optional **feedback**, and either **submission_id** from the roster OR **assignment_id**
+        + **student_roll**. Optional **updates_json** for the same fields.
+        If the tool returns **needs_confirmation**, ask the user clearly to confirm (yes/no);
+        on yes, call again with **confirmed=true**. Confirm success; on error, quote briefly.
     expected_output: >
         Plain faculty-focused reply — only the info they asked for. If vague,
         add one clarifying question at the end.
@@ -467,13 +539,11 @@ admin_portal_task:
         - Keep responses professional and concise.
 
         **CLARIFYING QUESTIONS - IF QUERY IS VAGUE:**
+        If unclear, ask: "Theek se bata dein, exactly kis cheez ki madad chahiye?"
+        / "Please tell me specifically what you need."
         If they ask unclear questions (e.g., "system", "announcements", "reports"):
-        1. Show most relevant current info
-        2. Then ask ONE clarifying line with relevant options.
-        Examples:
-        - If vague on announcements: "[Latest notice] Need urgent announcements, department-specific, or topic-based?"
-        - If vague on system: "[Current status] Need user stats, portal health, or active sessions?"
-        - If vague on reports: "[Latest summary] Need student records, course data, or specific report type?"
+        1. At most one line of safe, relevant info if obvious
+        2. Then ONE clarifying line with options (announcements scope, report type, etc.).
 
         Use get_student_info for this admin's profile. Use query_announcements for active
         notices. Give practical, neutral guidance; do not invent system-wide numbers.
@@ -481,3 +551,30 @@ admin_portal_task:
         Short professional reply suitable for staff. If vague, add one
         clarifying question at the end.
     agent: admin_portal_agent
+
+superadmin_portal_task:
+    description: >
+        Superadmin: {student_name} | Dept: {department} |
+        superadmin_id for portal_record_update actor_user_id: {student_id}
+
+        Query: "{query}"
+
+        Recent conversation:
+        {conversation_history}
+
+        **Scope:** You have the broadest read tools plus **portal_record_update** (grade, delete submission).
+        Destructive or grading writes are audit-logged. For **grade** and **delete**, if the tool returns
+        **needs_confirmation**, ask once: "Are you sure?" and only retry with **confirmed=true** after explicit yes.
+
+        **Other teachers’ data:** For assignment rosters or teaching load, call **query_teacher_teaching** /
+        **query_teacher_submission_roster** with the **target teacher’s** id, email, or employee_id — not
+        {student_id}. For your own operator profile, **get_student_info** with {student_id} returns the superadmin record.
+
+        **Grading / delete:** **portal_record_update** with actor_user_id="{student_id}", actor_role="superadmin",
+        entity="assignment_submission", operation="grade" or "delete", lookup fields as for faculty, **confirmed**
+        false first when the user has not clearly confirmed.
+
+        Answer only what was asked; be concise. Do not fabricate aggregates.
+    expected_output: >
+        Accurate operator reply grounded in tools. If destructive action was discussed, reflect confirmation.
+    agent: superadmin_portal_agent

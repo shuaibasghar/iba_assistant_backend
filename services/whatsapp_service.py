@@ -159,17 +159,10 @@ def mark_as_read(message_id: str) -> None:
 
 def parse_incoming_message(payload: dict) -> Optional[dict[str, Any]]:
     """
-    Extract the first text message from a WhatsApp webhook payload.
+    Extract the first user message (text or document) from a webhook payload.
 
-    Returns:
-        {
-            "from_phone": "923001234567",
-            "sender_name": "Ali Khan",
-            "message_id": "wamid.xxx",
-            "text": "meri fees ka status batao",
-            "timestamp": "1714000000",
-        }
-        or None if not a user text message.
+    Text: message_type, from_phone, sender_name, message_id, text, timestamp
+    Document: message_type, media_id, mime_type, filename, caption, ...
     """
     try:
         entry = payload.get("entry", [])
@@ -186,27 +179,82 @@ def parse_incoming_message(payload: dict) -> Optional[dict[str, Any]]:
             return None
 
         msg = messages[0]
-        if msg.get("type") != "text":
-            log.info("Ignoring non-text WhatsApp message type: %s", msg.get("type"))
-            return None
+        mtype = msg.get("type", "")
 
-        # Get sender name from contacts
         contacts = value.get("contacts", [])
         sender_name = ""
         if contacts:
             profile = contacts[0].get("profile", {})
             sender_name = profile.get("name", "")
 
-        return {
+        base = {
             "from_phone": msg.get("from", ""),
             "sender_name": sender_name,
             "message_id": msg.get("id", ""),
-            "text": msg.get("text", {}).get("body", ""),
             "timestamp": msg.get("timestamp", ""),
         }
+
+        if mtype == "text":
+            return {
+                **base,
+                "message_type": "text",
+                "text": msg.get("text", {}).get("body", ""),
+            }
+
+        if mtype == "document":
+            doc = msg.get("document") or {}
+            media_id = doc.get("id", "")
+            if not media_id:
+                log.warning("WhatsApp document message missing media id")
+                return None
+            return {
+                **base,
+                "message_type": "document",
+                "media_id": media_id,
+                "mime_type": doc.get("mime_type", ""),
+                "filename": doc.get("filename", "document.pdf"),
+                "caption": (doc.get("caption") or "").strip(),
+            }
+
+        log.info("Ignoring unsupported WhatsApp message type: %s", mtype)
+        return None
     except (IndexError, KeyError, TypeError) as exc:
         log.warning("Failed to parse WhatsApp webhook: %s", exc)
         return None
+
+
+def graph_media_url(media_id: str) -> str:
+    s = get_settings()
+    return f"https://graph.facebook.com/{s.whatsapp_api_version}/{media_id}"
+
+
+def download_whatsapp_media(media_id: str) -> tuple[bytes, str]:
+    """Download file bytes for a WhatsApp Cloud API media id."""
+    if not is_configured():
+        raise RuntimeError("WhatsApp API not configured")
+
+    token = get_settings().whatsapp_api_token
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(timeout=90) as client:
+        r = client.get(graph_media_url(media_id), headers=headers)
+        r.raise_for_status()
+        meta = r.json()
+        url = meta.get("url")
+        mime = meta.get("mime_type", "application/octet-stream")
+        if not url:
+            raise RuntimeError("No download URL in media response")
+        r2 = client.get(url, headers=headers)
+        r2.raise_for_status()
+        return r2.content, mime
+
+
+def pick_whatsapp_phone(user_doc: dict) -> Optional[str]:
+    """First usable phone from a Mongo user document (digits, no +/spaces)."""
+    for field in ("whatsapp_number", "phone", "contact_number", "mobile"):
+        raw = (user_doc.get(field) or "").strip()
+        if raw:
+            return raw.lstrip("+").replace(" ", "").replace("-", "")
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════

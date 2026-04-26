@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -30,6 +31,58 @@ from config import get_settings
 from services.email_service import send_bulk_email, is_configured as smtp_is_configured
 
 log = logging.getLogger(__name__)
+
+
+def _normalize_marks_hint(raw: Any) -> int:
+    try:
+        n = int(float(raw))
+        if 1 <= n <= 2000:
+            return n
+    except (TypeError, ValueError):
+        pass
+    return 100
+
+
+def _assignment_header_text(full_text: str, max_chars: int = 3200) -> str:
+    """
+    Only the start of the PDF text for NLP (title, course, due date, marks).
+    Avoids sending the whole brief to the classifier.
+    """
+    t = (full_text or "").strip()
+    if not t:
+        return ""
+    if len(t) <= max_chars:
+        return t
+    return t[:max_chars].rstrip() + "\n\n[... remainder of document omitted for extraction ...]"
+
+
+def infer_assignment_title(
+    text: str,
+    summary: str,
+    course_code: str,
+    filename: str,
+) -> str:
+    """LLM short title when classifier did not find a proper title."""
+    settings = get_settings()
+    if not (settings.openai_api_key or "").strip():
+        fallback = (summary or "").strip()[:100] or filename.replace("_", " ").replace(".pdf", "")
+        return (fallback or "New assignment")[:200]
+
+    os.environ["OPENAI_API_KEY"] = settings.openai_api_key
+    llm = ChatOpenAI(model=settings.openai_model, temperature=0)
+    prompt = f"""Write ONE concise university assignment title (max 12 words, no quotation marks).
+Course code: {course_code or "unknown"}
+Filename: {filename}
+Summary: {(summary or "")[:600]}
+Document excerpt:
+{(text or "")[:2500]}
+Reply with ONLY the title line, nothing else."""
+    try:
+        out = (llm.invoke(prompt).content or "").strip().strip('"').strip("'")
+        return (out[:200] if out else filename)[:200]
+    except Exception as exc:
+        log.warning("infer_assignment_title failed: %s", exc)
+        return ((summary or filename)[:120] or "New assignment")[:200]
 
 
 def _db():
@@ -67,7 +120,8 @@ def classify_document(text: str, filename: str, uploader_role: str = "unknown") 
 
     prompt = f"""You are a document classifier for a university portal.
 The uploader's role is: {uploader_role}.
-Analyze the following text extracted from a PDF named "{filename}" and return ONLY valid JSON with these keys:
+The excerpt below is ONLY THE BEGINNING of the PDF (header / title area). Infer metadata from that.
+Analyze text extracted from a PDF named "{filename}" and return ONLY valid JSON with these keys:
 
 - "document_type": one of "assignment", "submission", "transcript", "fee", "hostel", "library", "complaint", "notice", "syllabus", "report", "other"
     - Use "assignment" when a TEACHER is publishing/creating a new assignment for students.
@@ -88,6 +142,7 @@ Analyze the following text extracted from a PDF named "{filename}" and return ON
 - "course_subject_hint": the subject or course NAME that this document is about (e.g. "Natural Language Processing", "Database Systems", "Machine Learning"), or null. Extract this from context even if no course code is given.
 - "department_hint": the department code if mentioned (e.g. "CS", "AI", "BBA"), or null
 - "title_hint": the document title if found, or null
+- "total_marks_hint": integer total marks/points if the document states them (e.g. 20, 100), else null
 
 --- DOCUMENT TEXT ---
 {text[:4000]}
@@ -115,7 +170,106 @@ Respond with ONLY the JSON object, no markdown fences, no explanation."""
             "course_subject_hint": None,
             "department_hint": None,
             "title_hint": None,
+            "total_marks_hint": None,
         }
+
+
+def _notify_students_whatsapp_new_assignment(
+    course_id_str: str,
+    course_code: str,
+    title: str,
+    summary: str,
+    due_iso: str,
+    assignment_id_str: str,
+    download_base_url: str | None = None,
+) -> int:
+    """Notify enrolled students (with phone on file) about a new assignment + signed PDF link."""
+    from services import assignment_upload_service as asvc
+    from services.whatsapp_service import is_configured, send_text_message, pick_whatsapp_phone
+
+    if not is_configured():
+        return 0
+    try:
+        cid = ObjectId(course_id_str)
+    except Exception:
+        return 0
+
+    db = _db()
+    enrollments = list(
+        db["enrollments"].find({"course_id": cid, "status": "active"}, {"student_id": 1})
+    )
+    sids = [e["student_id"] for e in enrollments]
+    if not sids:
+        return 0
+
+    students = list(db["students"].find({"_id": {"$in": sids}}))
+    short_sum = (summary or "").strip()[:400]
+    sent = 0
+    for st in students:
+        phone = pick_whatsapp_phone(st)
+        if not phone:
+            continue
+        try:
+            dl_tok = asvc.mint_assignment_download_token(
+                str(st["_id"]), "student", assignment_id_str
+            )
+            dl_url = asvc.build_signed_assignment_url(dl_tok, download_base_url)
+        except Exception as exc:
+            log.warning("Could not mint download link for student %s: %s", st.get("_id"), exc)
+            dl_url = ""
+        body = (
+            f"📚 New assignment\n*{title}*\n"
+            f"Course: {course_code}\n"
+            f"Due: {due_iso}\n\n"
+            f"{short_sum}\n\n"
+        )
+        if dl_url:
+            body += f"Download full PDF:\n{dl_url}\n\n"
+        body += "Open the IBA portal or reply here for help."
+        if send_text_message(phone, body).get("success"):
+            sent += 1
+    log.info(
+        "WhatsApp: new assignment notices for %s → %d students",
+        course_code,
+        sent,
+    )
+    return sent
+
+
+def _notify_teacher_whatsapp_submission(
+    teacher_id_str: str | None,
+    student_name: str,
+    course_code: str,
+    assignment_title: str,
+    submission_pdf_url: str | None = None,
+) -> bool:
+    from services.whatsapp_service import is_configured, send_text_message, pick_whatsapp_phone
+
+    if not is_configured() or not teacher_id_str:
+        return False
+    try:
+        tid = ObjectId(teacher_id_str)
+    except Exception:
+        return False
+
+    db = _db()
+    teacher = db["teachers"].find_one({"_id": tid})
+    if not teacher:
+        return False
+    phone = pick_whatsapp_phone(teacher)
+    if not phone:
+        return False
+
+    body = (
+        f"📥 Assignment submitted\n"
+        f"Student: {student_name}\n"
+        f"Course: {course_code}\n"
+        f"Task: {assignment_title}\n\n"
+    )
+    if submission_pdf_url:
+        body += f"📎 Submitted PDF (signed link):\n{submission_pdf_url}\n\n"
+    body += "Review on the IBA portal."
+    return bool(send_text_message(phone, body).get("success"))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -261,25 +415,39 @@ def handle_document_upload(
     session_user_role: str,
     session_user_id: str,
     session_user_name: str,
+    source_tag: str = "chat_upload",
+    pdf_bytes: bytes | None = None,
+    download_base_url: str | None = None,
 ) -> dict[str, Any]:
     """
     Main entry point:
-      1. Classify the document via NLP
-      2. If assignment + teacher → save to DB so students can query it
-      3. Check if SMTP is configured
-      4. Resolve the right recipients from the DB based on document type
-      5. Send email notifications
-      6. Return result with classification + email status
+      1. Classify using only the header excerpt of the PDF text (metadata extraction)
+      2. If assignment + teacher → save to DB, optionally persist PDF on disk
+      3. Mint signed download URL for the uploader (and per-student links on WhatsApp)
+      4. Send email when SMTP is configured
     """
-    classification = classify_document(text, filename, uploader_role=session_user_role)
+    header = _assignment_header_text(text)
+    classification = classify_document(header, filename, uploader_role=session_user_role)
     doc_type = classification.get("document_type", "other")
     notify_target = classification.get("notify_target", "none")
-    summary = classification.get("summary", "")
-    title = classification.get("title_hint") or filename
+    summary = classification.get("summary", "") or ""
     key_dates = classification.get("key_dates", [])
     department_hint = classification.get("department_hint")
     course_hint = classification.get("course_hint")
     course_subject_hint = classification.get("course_subject_hint")
+    total_marks = _normalize_marks_hint(classification.get("total_marks_hint"))
+
+    fn_base = (filename or "document.pdf").strip().rsplit("/", 1)[-1]
+    title_raw = (classification.get("title_hint") or "").strip()
+    weak_title = (
+        not title_raw
+        or title_raw.lower() == fn_base.lower()
+        or title_raw.lower() in ("unknown", "untitled", "document", "assignment")
+    )
+    if weak_title:
+        title = infer_assignment_title(header, summary, course_hint or "", fn_base)
+    else:
+        title = title_raw
 
     result: dict[str, Any] = {
         "classification": classification,
@@ -289,6 +457,9 @@ def handle_document_upload(
         "notify_target_label": _TARGET_LABELS.get(notify_target, notify_target),
         "assignment_saved": False,
         "submission_recorded": False,
+        "whatsapp_students_notified": 0,
+        "whatsapp_teacher_notified": False,
+        "download_signed_url": None,
     }
 
     # ── Teacher uploading an assignment → save to DB ──
@@ -300,9 +471,37 @@ def handle_document_upload(
             key_dates=key_dates,
             course_hint=course_hint,
             course_subject_hint=course_subject_hint,
+            total_marks=total_marks,
+            source=source_tag,
+            pdf_bytes=pdf_bytes,
+            original_filename=fn_base,
         )
         result["assignment_saved"] = save_result.get("saved", False)
         result["assignment_save_details"] = save_result
+        if save_result.get("saved") and save_result.get("assignment_id"):
+            from services import assignment_upload_service as asvc
+
+            try:
+                tok = asvc.mint_assignment_download_token(
+                    session_user_id, session_user_role, save_result["assignment_id"]
+                )
+                result["download_signed_url"] = asvc.build_signed_assignment_url(
+                    tok, download_base_url
+                )
+                save_result["download_signed_url"] = result["download_signed_url"]
+            except Exception as exc:
+                log.warning("Could not mint teacher download URL: %s", exc)
+
+        if save_result.get("saved") and save_result.get("course_id"):
+            result["whatsapp_students_notified"] = _notify_students_whatsapp_new_assignment(
+                save_result["course_id"],
+                save_result.get("course_code", ""),
+                title,
+                summary,
+                save_result.get("due_date", ""),
+                save_result.get("assignment_id", ""),
+                download_base_url,
+            )
 
     # ── Student submitting assignment → update submission + notify teacher ──
     if doc_type == "submission" and session_user_role == "student":
@@ -312,15 +511,27 @@ def handle_document_upload(
             course_hint=course_hint,
             course_subject_hint=course_subject_hint,
             title=title,
+            pdf_bytes=pdf_bytes,
+            original_filename=fn_base,
+            download_base_url=download_base_url,
         )
         result["submission_recorded"] = sub_result.get("recorded", False)
         result["submission_details"] = sub_result
-        # Override notify_target so email goes to the teacher
+        if sub_result.get("student_submission_signed_url"):
+            result["submission_download_signed_url"] = sub_result["student_submission_signed_url"]
         if sub_result.get("teacher_email"):
             notify_target = "course_teacher"
             result["notify_target_label"] = _TARGET_LABELS.get("course_teacher", "Course Teacher")
+        if sub_result.get("submission_updated") and sub_result.get("teacher_id"):
+            result["whatsapp_teacher_notified"] = _notify_teacher_whatsapp_submission(
+                sub_result.get("teacher_id"),
+                session_user_name,
+                sub_result.get("course_code", ""),
+                sub_result.get("assignment_title", title),
+                submission_pdf_url=sub_result.get("teacher_submission_signed_url"),
+            )
 
-    # Skip if SMTP isn't configured
+    # Skip email if SMTP isn't configured
     if not smtp_is_configured():
         log.warning("SMTP not configured — skipping email notification for uploaded document.")
         return result
@@ -371,6 +582,11 @@ def handle_document_upload(
     ]
     if dates_text:
         body_lines.append(f"<b>Important dates:</b> {dates_text}")
+    sub_deets = result.get("submission_details") or {}
+    if sub_deets.get("teacher_submission_signed_url"):
+        body_lines.append(
+            f"<b>Submitted work (PDF):</b> {sub_deets['teacher_submission_signed_url']}"
+        )
     body_lines += [
         f"",
         f"Please log in to the IBA Sukkur Portal to review and take necessary action.",
@@ -405,6 +621,10 @@ def _save_assignment_to_db(
     key_dates: list[dict],
     course_hint: str | None,
     course_subject_hint: str | None = None,
+    total_marks: int = 100,
+    source: str = "chat_upload",
+    pdf_bytes: bytes | None = None,
+    original_filename: str | None = None,
 ) -> dict[str, Any]:
     """
     When the LLM says it's an assignment and a teacher uploaded it,
@@ -511,76 +731,66 @@ def _save_assignment_to_db(
     if not opens_at:
         opens_at = now
 
-    # Insert assignment
+    marks = int(total_marks) if total_marks else 100
+    if marks < 1:
+        marks = 100
+
+    from services import assignment_upload_service as asvc
+
     aid = ObjectId()
-    doc = {
-        "_id": aid,
-        "course_id": course["_id"],
-        "course_code": course_code,
-        "title": title,
-        "description": summary or "See uploaded document for details.",
-        "created_by_teacher": ObjectId(teacher_id),
-        "total_marks": 100,
-        "due_date": due_date,
-        "opens_at": opens_at,
-        "is_past": due_date < now,
-        "is_active": True,
-        "semester": course.get("semester"),
-        "created_at": now,
-        "university": course.get("university", "IBA Sukkur"),
-        "source": "chat_upload",
-    }
+    att_orig = None
+    att_stored = None
+    att_mime = None
+    if pdf_bytes and len(pdf_bytes) > 0 and asvc.verify_pdf_magic(pdf_bytes[:4096]):
+        stored_rel = f"{aid}.pdf"
+        dest = asvc.get_upload_dir() / stored_rel
+        dest.write_bytes(pdf_bytes)
+        att_orig = asvc._safe_pdf_name(original_filename or "assignment.pdf")
+        att_stored = stored_rel
+        att_mime = "application/pdf"
+
+    doc = asvc.build_assignment_document(
+        aid=aid,
+        course=course,
+        course_code=course_code,
+        title=title,
+        description=summary or "See uploaded document for details.",
+        teacher_oid=ObjectId(teacher_id),
+        total_marks=marks,
+        due_date=due_date,
+        opens_at=opens_at,
+        source=source,
+        university=course.get("university", "IBA Sukkur"),
+        now=now,
+        attachment_original_name=att_orig,
+        attachment_stored_name=att_stored,
+        attachment_mime=att_mime,
+    )
     db["assignments"].insert_one(doc)
 
-    # Create pending submissions for enrolled students
-    enrollments = list(db["enrollments"].find(
-        {"course_id": course["_id"], "status": "active"},
-        {"student_id": 1},
-    ))
-    student_ids = [e["student_id"] for e in enrollments]
-    students = {
-        str(s["_id"]): s
-        for s in db["students"].find({"_id": {"$in": student_ids}})
-    }
-
-    subs = []
-    for sid in student_ids:
-        st = students.get(str(sid))
-        if not st:
-            continue
-        subs.append({
-            "assignment_id": aid,
-            "course_id": course["_id"],
-            "course_code": course_code,
-            "student_id": sid,
-            "student_name": st.get("full_name", ""),
-            "student_roll": st.get("roll_number", ""),
-            "teacher_id": ObjectId(teacher_id),
-            "status": "pending",
-            "submitted_at": None,
-            "marks_obtained": 0,
-            "out_of": 100,
-            "feedback": None,
-            "graded": False,
-            "graded_at": None,
-            "is_flagged": False,
-            "flag_reason": None,
-            "university": course.get("university", "IBA Sukkur"),
-        })
-    if subs:
-        db["assignment_submissions"].insert_many(subs)
+    students_count = asvc.insert_pending_submissions_for_assignment(
+        db,
+        assignment_id=aid,
+        course_id=course["_id"],
+        course_code=course_code,
+        teacher_oid=ObjectId(teacher_id),
+        out_of=marks,
+        university=doc["university"],
+    )
 
     log.info(
         "Assignment saved: '%s' for %s (%d students notified in DB)",
-        title, course_code, len(subs),
+        title, course_code, students_count,
     )
     return {
         "saved": True,
         "assignment_id": str(aid),
+        "course_id": str(course["_id"]),
         "course_code": course_code,
         "course_name": course.get("course_name", course_code),
         "due_date": due_date.isoformat(),
-        "students_count": len(subs),
+        "opens_at": doc["opens_at"].isoformat(),
+        "students_count": students_count,
     }
 
 
@@ -588,21 +798,38 @@ def _save_assignment_to_db(
 # 5. HANDLE STUDENT SUBMISSION
 # ═══════════════════════════════════════════════════════════════════════
 
+def _submission_title_match_score(assignment_title: str, hint: str) -> int:
+    """Word overlap between assignment title and NLP hint (higher = better match)."""
+    def _words(s: str) -> set[str]:
+        w = set(re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).split())
+        filler = {
+            "the", "a", "an", "for", "and", "or", "of", "in", "to", "assignment",
+            "homework", "task", "project", "lab",
+        }
+        return w - filler
+
+    return len(_words(assignment_title) & _words(hint))
+
+
 def _handle_student_submission(
     student_id: str,
     student_name: str,
     course_hint: str | None,
     course_subject_hint: str | None,
     title: str,
+    pdf_bytes: bytes | None = None,
+    original_filename: str | None = None,
+    download_base_url: str | None = None,
 ) -> dict[str, Any]:
     """
-    When the LLM classifies a student's upload as a submission:
-      1. Find the matching course from the student's enrollments
-      2. Find a pending assignment for that course
-      3. Update the submission record to 'submitted'
-      4. Return teacher info so we can send them an email
+    When the LLM classifies a student's upload as a submission (not teacher assignment creation):
+      1. Resolve course from enrollments + hints
+      2. Pick best matching pending/overdue submission row (title match)
+      3. Mark submitted, optionally persist PDF + signed URLs for student & teacher
     """
     from datetime import datetime, timezone
+
+    from services import assignment_upload_service as asvc
 
     db = _db()
     now = datetime.now(timezone.utc)
@@ -615,9 +842,7 @@ def _handle_student_submission(
         return {"recorded": False, "reason": "Student not found"}
 
     dept = student.get("department")
-    roll = student.get("roll_number", "")
 
-    # Get student's active enrollments
     enrollments = list(db["enrollments"].find(
         {"student_id": ObjectId(student_id), "status": "active"}
     ))
@@ -629,10 +854,8 @@ def _handle_student_submission(
         {"course_code": {"$in": enrolled_codes}, "is_active": True}
     ))
 
-    # Match course using same 3-strategy approach
     course = None
 
-    # Strategy 1: Exact course code
     if course_hint:
         normalized = course_hint.replace("-", "").replace(" ", "").upper()
         for c in enrolled_courses:
@@ -640,7 +863,6 @@ def _handle_student_submission(
                 course = c
                 break
 
-    # Strategy 2: Subject name matching
     if not course and course_subject_hint:
         subject_lower = course_subject_hint.lower()
         subject_words = set(subject_lower.split())
@@ -665,7 +887,6 @@ def _handle_student_submission(
         if not course and best_match and best_score >= 1:
             course = best_match
 
-    # Strategy 3: Try matching from assignment title
     if not course and title:
         title_lower = title.lower()
         for c in enrolled_courses:
@@ -678,45 +899,117 @@ def _handle_student_submission(
 
     course_code = course["course_code"]
 
-    # Find a pending assignment for this student + course
-    pending_sub = db["assignment_submissions"].find_one({
+    candidates = list(db["assignment_submissions"].find({
         "student_id": ObjectId(student_id),
         "course_code": course_code,
-        "status": "pending",
-    })
+        "status": {"$in": ["pending", "overdue"]},
+    }))
 
+    pending_sub = None
     assignment_title = title
+
+    if candidates:
+        scored: list[tuple[int, Any]] = []
+        for sub in candidates:
+            asn = db["assignments"].find_one({"_id": sub["assignment_id"]})
+            atitle = (asn or {}).get("title") or ""
+            sc = _submission_title_match_score(atitle, title)
+            scored.append((sc, sub))
+        scored.sort(
+            key=lambda x: (
+                -x[0],
+                0 if (x[1].get("status") or "") == "pending" else 1,
+            )
+        )
+        pending_sub = scored[0][1]
+        asn0 = db["assignments"].find_one({"_id": pending_sub["assignment_id"]})
+        if asn0:
+            assignment_title = asn0.get("title", title)
+
+    student_sub_url: str | None = None
+    teacher_sub_url: str | None = None
+
     if pending_sub:
-        # Update submission status
+        update_fields: dict[str, Any] = {
+            "status": "submitted",
+            "submitted_at": now,
+        }
+
+        if (
+            pdf_bytes
+            and len(pdf_bytes) > 0
+            and asvc.verify_pdf_magic(pdf_bytes[:4096])
+        ):
+            sub_oid = pending_sub["_id"]
+            stored_rel = f"{sub_oid}.pdf"
+            dest = asvc.get_submission_upload_dir() / stored_rel
+            dest.write_bytes(pdf_bytes)
+            update_fields["submission_attachment_stored_name"] = stored_rel
+            update_fields["submission_attachment_original_name"] = asvc._safe_pdf_name(
+                original_filename or "submission.pdf"
+            )
+            update_fields["submission_attachment_mime"] = "application/pdf"
+
         db["assignment_submissions"].update_one(
             {"_id": pending_sub["_id"]},
-            {"$set": {
-                "status": "submitted",
-                "submitted_at": now,
-            }}
+            {"$set": update_fields},
         )
-        # Get assignment title
-        assignment = db["assignments"].find_one({"_id": pending_sub["assignment_id"]})
-        if assignment:
-            assignment_title = assignment.get("title", title)
-    else:
-        log.info("No pending submission found for student %s in %s, skipping DB update", student_id, course_code)
 
-    # Find the teacher for this course
-    teacher = db["teachers"].find_one({
-        "assigned_course_codes": course_code,
-        "department": dept,
-    })
+        sub_row_id = str(pending_sub["_id"])
+        if update_fields.get("submission_attachment_stored_name"):
+            try:
+                st_tok = asvc.mint_submission_download_token(
+                    student_id, "student", sub_row_id
+                )
+                student_sub_url = asvc.build_signed_submission_url(
+                    st_tok, download_base_url
+                )
+                tid_for_tok = str(pending_sub.get("teacher_id") or "")
+                if tid_for_tok:
+                    tt_tok = asvc.mint_submission_download_token(
+                        tid_for_tok, "teacher", sub_row_id
+                    )
+                    teacher_sub_url = asvc.build_signed_submission_url(
+                        tt_tok, download_base_url
+                    )
+            except Exception as exc:
+                log.warning("Could not mint submission download URLs: %s", exc)
+    else:
+        log.info(
+            "No pending/overdue submission for student %s in %s — no row updated",
+            student_id,
+            course_code,
+        )
+
+    # Prefer instructor on the submission row (same as assignment creator)
+    teacher = None
+    if pending_sub and pending_sub.get("teacher_id"):
+        raw_tid = pending_sub["teacher_id"]
+        try:
+            teacher = db["teachers"].find_one({"_id": ObjectId(str(raw_tid))})
+        except Exception:
+            teacher = db["teachers"].find_one({"_id": raw_tid})
+    if not teacher:
+        teacher = db["teachers"].find_one({
+            "assigned_course_codes": course_code,
+            "department": dept,
+        })
 
     teacher_email = None
     teacher_name = None
+    teacher_id_str: str | None = None
     if teacher:
         teacher_email = teacher.get("email")
         teacher_name = teacher.get("full_name")
+        teacher_id_str = str(teacher["_id"])
 
     log.info(
-        "Student submission: %s submitted for %s (%s) → teacher: %s",
-        student_name, course_code, assignment_title, teacher_name or "not found",
+        "Student submission: %s → %s (%s) updated=%s file=%s",
+        student_name,
+        course_code,
+        assignment_title,
+        pending_sub is not None,
+        bool(pdf_bytes and pending_sub),
     )
 
     return {
@@ -726,5 +1019,9 @@ def _handle_student_submission(
         "assignment_title": assignment_title,
         "teacher_name": teacher_name,
         "teacher_email": teacher_email,
+        "teacher_id": teacher_id_str,
         "submission_updated": pending_sub is not None,
+        "submission_row_id": str(pending_sub["_id"]) if pending_sub else None,
+        "student_submission_signed_url": student_sub_url,
+        "teacher_submission_signed_url": teacher_sub_url,
     }

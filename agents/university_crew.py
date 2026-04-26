@@ -22,6 +22,7 @@ from .tools.database_tools import (
     AdmitCardQueryTool,
     AnnouncementQueryTool,
     AssignmentQueryTool,
+    PortalDownloadLinkTool,
     AttendanceQueryTool,
     ComplaintQueryTool,
     CourseTeacherQueryTool,
@@ -34,6 +35,8 @@ from .tools.database_tools import (
     ScholarshipQueryTool,
     StudentInfoTool,
     TeacherTeachingQueryTool,
+    TeacherSubmissionRosterTool,
+    PortalRecordUpdateTool,
     TimetableQueryTool,
 )
 from utils.query_scope import assignment_scope_prompt, grade_scope_prompt
@@ -119,6 +122,7 @@ class ToolFactory:
         tools = {
             "student_info": StudentInfoTool,
             "assignment": AssignmentQueryTool,
+            "portal_downloads": PortalDownloadLinkTool,
             "fee": FeeQueryTool,
             "exam": ExamQueryTool,
             "admit_card": AdmitCardQueryTool,
@@ -133,6 +137,8 @@ class ToolFactory:
             "complaint": ComplaintQueryTool,
             "announcement": AnnouncementQueryTool,
             "teacher_teaching": TeacherTeachingQueryTool,
+            "teacher_submission_roster": TeacherSubmissionRosterTool,
+            "portal_record_update": PortalRecordUpdateTool,
         }
         
         if tool_name not in tools:
@@ -152,6 +158,9 @@ class ToolFactory:
         if intent == "TEACHER":
             return [
                 ToolFactory.create_tool("teacher_teaching", db_config),
+                ToolFactory.create_tool("teacher_submission_roster", db_config),
+                ToolFactory.create_tool("portal_record_update", db_config),
+                ToolFactory.create_tool("portal_downloads", db_config),
                 ToolFactory.create_tool("student_info", db_config),
                 ToolFactory.create_tool("announcement", db_config),
             ]
@@ -162,12 +171,34 @@ class ToolFactory:
                 ToolFactory.create_tool("announcement", db_config),
             ]
 
+        if intent == "SUPERADMIN":
+            return [
+                ToolFactory.create_tool("student_info", db_config),
+                ToolFactory.create_tool("assignment", db_config),
+                ToolFactory.create_tool("fee", db_config),
+                ToolFactory.create_tool("exam", db_config),
+                ToolFactory.create_tool("grade", db_config),
+                ToolFactory.create_tool("records", db_config),
+                ToolFactory.create_tool("attendance", db_config),
+                ToolFactory.create_tool("timetable", db_config),
+                ToolFactory.create_tool("library", db_config),
+                ToolFactory.create_tool("scholarship", db_config),
+                ToolFactory.create_tool("hostel", db_config),
+                ToolFactory.create_tool("complaint", db_config),
+                ToolFactory.create_tool("announcement", db_config),
+                ToolFactory.create_tool("portal_downloads", db_config),
+                ToolFactory.create_tool("teacher_teaching", db_config),
+                ToolFactory.create_tool("teacher_submission_roster", db_config),
+                ToolFactory.create_tool("portal_record_update", db_config),
+                ToolFactory.create_tool("course_teacher", db_config),
+            ]
+
         intent_tools = {
-            "ASSIGNMENT": ["assignment", "student_info"],
+            "ASSIGNMENT": ["assignment", "portal_downloads", "student_info"],
+            "DOCUMENT": ["records", "fee", "student_info", "portal_downloads"],
             "FEE": ["fee", "student_info"],
             "EXAM": ["exam", "admit_card", "student_info"],
             "GRADE": ["grade", "student_info"],
-            "DOCUMENT": ["records", "fee", "student_info"],
             "ATTENDANCE": ["attendance", "student_info"],
             "TIMETABLE": ["timetable", "course_teacher", "student_info"],
             "LIBRARY": ["library", "student_info"],
@@ -175,7 +206,7 @@ class ToolFactory:
             "HOSTEL": ["hostel", "student_info"],
             "COMPLAINT": ["complaint", "student_info"],
             "ANNOUNCEMENT": ["announcement", "student_info"],
-            "GENERAL": ["student_info"],
+            "GENERAL": ["student_info", "portal_downloads"],
         }
         
         tool_names = intent_tools.get(intent, ["student_info"])
@@ -209,6 +240,7 @@ class AgentFactory:
         "EMAIL": "email_agent",
         "TEACHER": "teacher_portal_agent",
         "ADMIN": "admin_portal_agent",
+        "SUPERADMIN": "superadmin_portal_agent",
         "GENERAL": "general_assistant",
     }
     
@@ -229,6 +261,7 @@ class AgentFactory:
         "EMAIL": "send_email_task",
         "TEACHER": "teacher_portal_task",
         "ADMIN": "admin_portal_task",
+        "SUPERADMIN": "superadmin_portal_task",
         "GENERAL": "general_conversation_task",
     }
     
@@ -332,6 +365,7 @@ class TaskFactory:
             "general_conversation_task",
             "teacher_portal_task",
             "admin_portal_task",
+            "superadmin_portal_task",
         ):
             format_args["conversation_history"] = student_context.get(
                 "conversation_history", "No previous messages."

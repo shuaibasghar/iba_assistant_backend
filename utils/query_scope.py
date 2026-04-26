@@ -51,6 +51,16 @@ ASSIGNMENT_SCOPE_PROMPTS: dict[str, str] = {
         "- Do NOT mention any other assignments or previous submissions.\n"
         "- Format: A single short sentence like 'Your last submitted assignment was [Name] for [Course].'"
     ),
+    "NEWEST_INCOMPLETE_UPLOAD": (
+        "SYSTEM-LOCKED SCOPE: NEWEST_INCOMPLETE_UPLOAD.\n"
+        "The user asked for the LAST / LATEST / RECENT / NEWEST *pending* (not-yet-submitted) assignment.\n"
+        "Rules you MUST follow:\n"
+        "- Use **newest_incomplete_assignment** from the assignment tool — that is the task most recently "
+        "**posted** on the portal (upload/created time), NOT the one with the nearest due date.\n"
+        "- That row may be bucket pending, upcoming, or overdue; say so in one phrase if helpful.\n"
+        "- If they asked for the PDF or link, include **assignment_brief_pdf_url** from that row (verbatim).\n"
+        "- Answer in one short reply; do not list other assignments unless they asked for a full list.\n"
+    ),
     "ALL": (
         "SYSTEM SCOPE: ALL.\n"
         "The user wants a full assignment picture. You may cover pending, overdue, submitted, and upcoming, "
@@ -80,6 +90,17 @@ def detect_assignment_reply_scope(query: str) -> str:
     if re.search(r"\b(most recent|latest|most recent submission|pichla submission|pichla assignment)\b", q):
         if re.search(r"\bsubmitted\b|\bsubmission\b", q):
             return "LAST_SUBMITTED_ONLY"
+
+    # Last/latest/recent + pending = newest posted assignment not yet submitted (includes "upcoming" bucket)
+    if re.search(r"\bpending\b", q) and not re.search(r"\bsubmitted\b|\bsubmission\b", q):
+        if re.search(
+            r"\b(last|latest|newest|recent|reece*nt|most recent|pichla|akhiri)\b",
+            q,
+        ) and not re.search(
+            r"\b(all|everything|full|sab|list|kitne|how many|dikhao sab)\b",
+            q,
+        ):
+            return "NEWEST_INCOMPLETE_UPLOAD"
 
     if re.search(r"\bpending\b", q) and re.search(r"\boverdue\b", q):
         return "ALL"

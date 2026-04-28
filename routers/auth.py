@@ -31,7 +31,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 class LoginRequest(BaseModel):
     """Login request with email and password."""
-    email: EmailStr = Field(..., description="User email address")
+    email: EmailStr = Field(..., description="User email address") #... these dots means that the email is required
     password: str = Field(..., description="User password", min_length=6)
     
     class Config:
@@ -109,7 +109,7 @@ class TeacherResponse(UserResponse):
 @router.post("/login", response_model=LoginResponse)
 async def login(
     request: LoginRequest,
-    auth_service: AuthService = Depends(get_auth_service)
+    auth_service: AuthService = Depends(get_auth_service) # it creates an instance of the AuthService class
 ):
     """
     Login with email and password.
@@ -127,6 +127,7 @@ async def login(
     - `role`: User's role (student/teacher/admin)
     - `user`: User profile information
     """
+    
     user, role = auth_service.authenticate_user(
         email=request.email,
         password=request.password

@@ -14,6 +14,7 @@ from routers.report import router as report_router
 from routers.assignments import router as assignments_router
 from routers.upload import router as upload_router
 from routers.whatsapp import router as whatsapp_router
+from routers.exports import router as exports_router
 
 log = logging.getLogger(__name__)
 logging.basicConfig(
@@ -21,7 +22,7 @@ logging.basicConfig(
     format="%(levelname)s [%(name)s] %(message)s",
     force=True,
 )
-
+log.info("Starting IBA Sukkur University Portal API")
 
 def _display_mongo_target(url: str) -> str:
     """Host:port for logs (does not print user/password)."""
@@ -135,8 +136,8 @@ app = FastAPI(
     Supports English and Roman Urdu (e.g., "meri fees ka status batao")
     """,
     version="1.0.0",
-    lifespan=lifespan,
-    swagger_ui_parameters={"persistAuthorization": True}
+    lifespan=lifespan, 
+    swagger_ui_parameters={"persistAuthorization": True} # This is for the swagger UI to persist the authorization token
 )
 
 # CORS middleware for frontend
@@ -155,6 +156,7 @@ app.include_router(report_router)
 app.include_router(assignments_router)
 app.include_router(upload_router)
 app.include_router(whatsapp_router)
+app.include_router(exports_router)
 
 
 @app.get("/")

@@ -167,10 +167,64 @@ def get_permission_rule_for_role(role: str) -> RolePermissionRule:
     return ROLE_PERMISSION_MAP.get(role.lower(), DEFAULT_ROLE_PERMISSION)
 
 
+def _is_student_bulk_directory_request(query: str) -> bool:
+    """
+    Full teacher/staff/faculty rosters, CSV/Excel lists, and similar directory exports
+    for students. Handled with a one-line deny before intent routing.
+    """
+    n = re.sub(r"\s+", " ", (query or "").lower()).strip()
+    if not n or len(n) < 6:
+        return False
+    if re.search(r"\b(all|every|entire|full|complete)\s+teachers?\b", n):
+        return True
+    if re.search(r"\bteachers?(\'s)?\s+(in|as|to)\s+(a\s+)?(csv|excel|spreadsheet)\b", n):
+        return True
+    if "csv" in n and re.search(
+        r"\b(teacher|teachers|faculty|staff|employee|instructor)s?\b", n
+    ) and re.search(
+        r"\b(list|lists|roster|export|download|generate|get|show|give|bana|banaye)\b", n
+    ):
+        return True
+    if re.search(r"\b(list|roster|directory) of (all|every|all the)\s+teachers?\b", n):
+        return True
+    if re.search(
+        r"\b(list|roster|directory)\b", n
+    ) and re.search(r"\b(all|every|full|entire|complete)\b", n) and re.search(
+        r"\b(teacher|teachers|faculty|staff)\b", n
+    ):
+        return True
+    if re.search(
+        r"\b(names? of|name of) (all|every)\s+teachers?\b", n
+    ) or re.search(
+        r"\b(all|every) teachers? names?\b", n
+    ):
+        return True
+    if re.search(
+        r"\b(show|give|send|batao|batao na|yes|haan)\b", n
+    ) and re.search(
+        r"\b(all|every)\s+teac\w*\b", n
+    ) and re.search(
+        r"\b(name|names|list|csv)\b", n
+    ):
+        return True
+    # Typo-tolerant: "all teacehrs name" without leading show/give/yes
+    if "all" in n and re.search(
+        r"\bteac\w+\b", n
+    ) and re.search(r"\b(name|names|list|csv|show)\b", n):
+        return True
+    return False
+
+
+# Single line, no long explanations (product policy for denied directory-style asks).
+STUDENT_DIRECTORY_DENY = "You are not authorized to access that."
+
+
 def check_user_permission(query: str, role: str) -> Optional[str]:
     r = (role or "").strip().lower()
     if r in ("superadmin", "superuser"):
         return None
+    if r == "student" and _is_student_bulk_directory_request(query):
+        return STUDENT_DIRECTORY_DENY
     rule = get_permission_rule_for_role(role)
     if rule.matches_denied_query(query):
         return rule.deny_message

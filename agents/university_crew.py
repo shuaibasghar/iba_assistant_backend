@@ -37,10 +37,16 @@ from .tools.database_tools import (
     TeacherTeachingQueryTool,
     TeacherSubmissionRosterTool,
     PortalRecordUpdateTool,
+    SuperadminDirectoryTool,
+    ExportPortalDataTool,
+    PortalReadQueryTool,
     TimetableQueryTool,
 )
 from utils.query_scope import assignment_scope_prompt, grade_scope_prompt
 from .tools.platform_email_tools import get_platform_email_tools
+from config import get_settings
+
+settings = get_settings()
 
 # Match order used for substring routing (exclude GENERAL).
 _CREW_ROUTE_INTENTS = (
@@ -139,6 +145,9 @@ class ToolFactory:
             "teacher_teaching": TeacherTeachingQueryTool,
             "teacher_submission_roster": TeacherSubmissionRosterTool,
             "portal_record_update": PortalRecordUpdateTool,
+            "superadmin_directory": SuperadminDirectoryTool,
+            "export_portal_data": ExportPortalDataTool,
+            "portal_read_query": PortalReadQueryTool,
         }
         
         if tool_name not in tools:
@@ -169,6 +178,7 @@ class ToolFactory:
             return [
                 ToolFactory.create_tool("student_info", db_config),
                 ToolFactory.create_tool("announcement", db_config),
+                ToolFactory.create_tool("portal_read_query", db_config),
             ]
 
         if intent == "SUPERADMIN":
@@ -191,6 +201,9 @@ class ToolFactory:
                 ToolFactory.create_tool("teacher_submission_roster", db_config),
                 ToolFactory.create_tool("portal_record_update", db_config),
                 ToolFactory.create_tool("course_teacher", db_config),
+                ToolFactory.create_tool("superadmin_directory", db_config),
+                ToolFactory.create_tool("export_portal_data", db_config),
+                ToolFactory.create_tool("portal_read_query", db_config),
             ]
 
         intent_tools = {
@@ -198,7 +211,7 @@ class ToolFactory:
             "DOCUMENT": ["records", "fee", "student_info", "portal_downloads"],
             "FEE": ["fee", "student_info"],
             "EXAM": ["exam", "admit_card", "student_info"],
-            "GRADE": ["grade", "student_info"],
+            "GRADE": ["grade", "student_info", "export_portal_data"],
             "ATTENDANCE": ["attendance", "student_info"],
             "TIMETABLE": ["timetable", "course_teacher", "student_info"],
             "LIBRARY": ["library", "student_info"],
@@ -206,7 +219,7 @@ class ToolFactory:
             "HOSTEL": ["hostel", "student_info"],
             "COMPLAINT": ["complaint", "student_info"],
             "ANNOUNCEMENT": ["announcement", "student_info"],
-            "GENERAL": ["student_info", "portal_downloads"],
+            "GENERAL": ["student_info", "portal_downloads", "export_portal_data"],
         }
         
         tool_names = intent_tools.get(intent, ["student_info"])
@@ -276,7 +289,7 @@ class AgentFactory:
             goal=agent_config["goal"].strip(),
             backstory=agent_config["backstory"].strip(),
             tools=[ToolFactory.create_tool("student_info")],
-            verbose=True,
+            verbose=settings.crewai_verbose,
             allow_delegation=False,  # Router doesn't delegate, just classifies
         )
     
@@ -299,7 +312,7 @@ class AgentFactory:
             goal=agent_config["goal"].strip(),
             backstory=agent_config["backstory"].strip(),
             tools=tools,
-            verbose=True,
+            verbose=settings.crewai_verbose,
             allow_delegation=agent_config.get("allow_delegation", False),
         )
 
@@ -315,7 +328,7 @@ class TaskFactory:
     def create_routing_task(
         cls,
         query: str,
-        student_context: dict,
+        user_context: dict,
         agent: Agent,
         tenant_id: str = "default"
     ) -> Task:
@@ -326,10 +339,11 @@ class TaskFactory:
         # Inject dynamic context into description
         description = task_config["description"].format(
             query=query,
-            student_name=student_context.get("student_name", "Unknown"),
-            roll_number=student_context.get("roll_number", "Unknown"),
-            semester=student_context.get("semester", "Unknown"),
-            department=student_context.get("department", "Unknown"),
+            student_name=user_context.get("user_name", "Unknown"),
+            user_name=user_context.get("user_name", "Unknown"),
+            roll_number=user_context.get("roll_number", ""),
+            semester=user_context.get("semester", ""),
+            department=user_context.get("department", ""),
         )
         
         return Task(
@@ -343,7 +357,7 @@ class TaskFactory:
         cls,
         intent: str,
         query: str,
-        student_context: dict,
+        user_context: dict,
         agent: Agent,
         tenant_id: str = "default"
     ) -> Task:
@@ -353,13 +367,20 @@ class TaskFactory:
         task_config = config[task_key]
         
         # Inject dynamic context into description
+        uid = (user_context.get("user_id") or user_context.get("student_id") or "").strip()
         format_args = dict(
             query=query,
-            student_name=student_context.get("student_name", "Unknown"),
-            student_id=student_context.get("student_id", ""),
-            roll_number=student_context.get("roll_number", "Unknown"),
-            semester=student_context.get("semester", "Unknown"),
-            department=student_context.get("department", "Unknown"),
+            user_name=user_context.get("user_name", "Unknown"),
+            user_id=uid,
+            # YAML templates use {student_id} for tool IDs (student mongo id, or teacher/admin id).
+            student_id=user_context.get("student_id") or uid,
+            student_name=user_context.get("user_name", "Unknown"),  # Alias for YAML compatibility
+            roll_number=user_context.get("roll_number")
+            or user_context.get("employee_number", ""),
+            semester=user_context.get("semester", ""),
+            department=user_context.get("department", ""),
+            designation=user_context.get("designation", ""),
+            employee_number=user_context.get("employee_number", ""),
         )
         if task_key in (
             "general_conversation_task",
@@ -367,14 +388,14 @@ class TaskFactory:
             "admin_portal_task",
             "superadmin_portal_task",
         ):
-            format_args["conversation_history"] = student_context.get(
+            format_args["conversation_history"] = user_context.get(
                 "conversation_history", "No previous messages."
             )
         if task_key == "fetch_assignments_task":
-            scope = student_context.get("assignment_reply_scope", "ALL")
+            scope = user_context.get("assignment_reply_scope", "ALL")
             format_args["assignment_reply_scope"] = assignment_scope_prompt(scope)
         if task_key == "fetch_grades_task":
-            scope = student_context.get("grade_reply_scope", "ALL")
+            scope = user_context.get("grade_reply_scope", "ALL")
             format_args["grade_reply_scope"] = grade_scope_prompt(scope)
         description = task_config["description"].format(**format_args)
         
@@ -397,10 +418,10 @@ class UniversityCrewFactory:
         factory = UniversityCrewFactory(tenant_id="iba_sukkur")
         
         # Step 1: Route the query
-        intent = factory.route_query(query, student_context)
+        intent = factory.route_query(query, user_context)
         
         # Step 2: Execute with specialist
-        result = factory.execute_query(intent, query, student_context)
+        result = factory.execute_query(intent, query, user_context)
     """
     
     def __init__(self, tenant_id: str = "default", db_config: dict = None):
@@ -410,7 +431,7 @@ class UniversityCrewFactory:
     def create_routing_crew(
         self, 
         query: str, 
-        student_context: dict
+        user_context: dict
     ) -> Crew:
         """
         Create a lightweight crew just for intent routing.
@@ -419,7 +440,7 @@ class UniversityCrewFactory:
         router = AgentFactory.create_router_agent(self.tenant_id)
         routing_task = TaskFactory.create_routing_task(
             query=query,
-            student_context=student_context,
+            user_context=user_context,
             agent=router,
             tenant_id=self.tenant_id
         )
@@ -428,14 +449,14 @@ class UniversityCrewFactory:
             agents=[router],
             tasks=[routing_task],
             process=Process.sequential,
-            verbose=True,
+            verbose=settings.crewai_verbose,
         )
     
     def create_specialist_crew(
         self,
         intent: str,
         query: str,
-        student_context: dict
+        user_context: dict
     ) -> Crew:
         """
         Create a specialist crew based on detected intent.
@@ -450,7 +471,7 @@ class UniversityCrewFactory:
         specialist_task = TaskFactory.create_specialist_task(
             intent=intent,
             query=query,
-            student_context=student_context,
+            user_context=user_context,
             agent=specialist,
             tenant_id=self.tenant_id
         )
@@ -459,15 +480,15 @@ class UniversityCrewFactory:
             agents=[specialist],
             tasks=[specialist_task],
             process=Process.sequential,
-            verbose=True,
+            verbose=settings.crewai_verbose,
         )
     
-    def route_query(self, query: str, student_context: dict) -> str:
+    def route_query(self, query: str, user_context: dict) -> str:
         """
         Route a query to determine intent.
         Returns: Intent string (one of _CREW_ROUTE_INTENTS or GENERAL)
         """
-        crew = self.create_routing_crew(query, student_context)
+        crew = self.create_routing_crew(query, user_context)
         result = crew.kickoff()
         
         # Parse intent from result (simplified - enhance as needed)
@@ -483,17 +504,17 @@ class UniversityCrewFactory:
         self, 
         intent: str, 
         query: str, 
-        student_context: dict
+        user_context: dict
     ) -> str:
         """
         Execute a query with the appropriate specialist agent.
         Returns: Natural language response for the student.
         """
-        crew = self.create_specialist_crew(intent, query, student_context)
+        crew = self.create_specialist_crew(intent, query, user_context)
         result = crew.kickoff()
         return str(result)
     
-    def handle_student_query(self, query: str, student_context: dict) -> dict:
+    def handle_student_query(self, query: str, user_context: dict) -> dict:
         """
         Full pipeline: Route → Execute → Return result.
         
@@ -501,21 +522,21 @@ class UniversityCrewFactory:
         
         Args:
             query: The student's question (can be English or Roman Urdu)
-            student_context: Dict with student_id, student_name, roll_number, etc.
+            user_context: Dict with student_id, student_name, roll_number, etc.
         
         Returns:
             Dict with intent, response, and metadata
         """
         # Step 1: Route to determine intent
-        intent = self.route_query(query, student_context)
+        intent = self.route_query(query, user_context)
         
         # Step 2: Execute with appropriate specialist
-        response = self.execute_query(intent, query, student_context)
+        response = self.execute_query(intent, query, user_context)
         
         return {
             "intent": intent,
             "response": response,
-            "student_id": student_context.get("student_id"),
+            "user_id": user_context.get("user_id"),
             "query": query,
         }
 
@@ -526,7 +547,7 @@ class UniversityCrewFactory:
 
 def process_student_query(
     query: str,
-    student_context: dict,
+    user_context: dict,
     tenant_id: str = "default"
 ) -> dict:
     """
@@ -535,7 +556,7 @@ def process_student_query(
     Example:
         result = process_student_query(
             query="meri fees ka status batao",
-            student_context={
+            user_context={
                 "student_id": "...",
                 "student_name": "Ali Khan",
                 "roll_number": "CS-2023-001",
@@ -546,7 +567,7 @@ def process_student_query(
         print(result["response"])
     """
     factory = UniversityCrewFactory(tenant_id=tenant_id)
-    return factory.handle_student_query(query, student_context)
+    return factory.handle_student_query(query, user_context)
 
 
 def quick_route(query: str) -> str:

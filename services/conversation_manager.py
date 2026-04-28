@@ -6,9 +6,12 @@ Uses Redis-backed memory for persistence within session lifetime.
 """
 
 import json
+import logging
 from typing import Optional, List
 from datetime import datetime
 import redis
+
+log = logging.getLogger(__name__)
 
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langchain_core.chat_history import BaseChatMessageHistory
@@ -29,7 +32,7 @@ class SessionChatHistory(BaseChatMessageHistory):
         self.key = f"chat_history:{session_id}"
         self.ttl = ttl
     
-    @property
+    @property #this is a property of the class, so we can access it like a variable instead of calling function
     def messages(self) -> List[BaseMessage]:
         """Get all messages from Redis."""
         data = self.redis_client.get(self.key)
@@ -93,7 +96,7 @@ class SessionChatHistory(BaseChatMessageHistory):
         
         lines = []
         for msg in messages:
-            role = "Student" if isinstance(msg, HumanMessage) else "Assistant"
+            role = "Human" if isinstance(msg, HumanMessage) else "Assistant"
             lines.append(f"{role}: {msg.content}")
         
         return "\n".join(lines)
@@ -188,11 +191,10 @@ class ConversationManager:
 class ConversationManagerFactory:
     """Factory for creating conversation managers."""
     
-    _managers: dict = {}
-    
+    _managers: dict = {} #memory bank
     @classmethod
     def get_manager(
-        cls, 
+        cls, #this is the class itself so we can access the class variables and methods like _managers cls is because of classmethod
         session_id: str, 
         session: StudentSession = None
     ) -> ConversationManager:
@@ -205,6 +207,17 @@ class ConversationManagerFactory:
                 session_id=session_id,
                 session=session
             )
+            print(f"[DEBUG] Added manager for session_id: {session_id}")
+        
+        print(f"[DEBUG] Total managers: {len(cls._managers)}")
+        for sid, mgr in cls._managers.items():
+            print(f"[DEBUG] {sid} -> chat_history_len:{len(mgr.chat_history.messages)}, session:{mgr.session}")
+        # log.info(
+        #     "[ConversationManagerFactory] session_id=%s cached_session_ids=%s count=%s",
+        #     session_id,
+        #     list(cls._managers.keys()),
+        #     len(cls._managers),
+        # )
         return cls._managers[session_id]
     
     @classmethod
@@ -216,4 +229,11 @@ class ConversationManagerFactory:
     @classmethod
     def clear_all(cls) -> None:
         """Clear all cached managers."""
+        print(f"[DEBUG] _managers contents: {cls._managers}")
         cls._managers.clear()
+
+    @classmethod
+    def get_all_managers(cls) -> dict:
+        """Return all cached managers."""
+        print(f"[DEBUG] _managers contents: {cls._managers}")
+        return cls._managers.copy()

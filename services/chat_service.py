@@ -317,7 +317,7 @@ class ChatService:
         crew = factory.create_specialist_crew(
             intent=intent,
             query=query,
-            student_context=context
+            user_context=context,
         )
         
         result = crew.kickoff()

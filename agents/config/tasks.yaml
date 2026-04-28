@@ -27,7 +27,9 @@ route_query_task:
         3. EXAM - exam schedule, dates, venues, papers, hall ticket, admit card, roll number slip
         4. GRADE - results, marks, CGPA, GPA, academic performance
         5. DOCUMENT - transcripts, enrollment certificates, official document status, degree,
-           "document" when they clearly mean registrar/records (not a class handout)
+           "document" when they clearly mean registrar/records (not a class handout).
+           **Not** teacher/faculty rosters, "all teachers", CSV/Excel lists of people, or directory
+           exports — use GENERAL.
         6. ATTENDANCE - class attendance, shortage, percentage, 75% rule
         7. TIMETABLE - class schedule, time table, which class when, room
         8. LIBRARY - books issued, due date, fine, return
@@ -281,6 +283,10 @@ process_document_request_task:
         / "Please tell me specifically — official transcript/certificate, or a class handout PDF?"
         If still unclear after that, then: (1) official paperwork → recent transcript/certificate
         status via records; (2) class material → find_portal_downloads with search_query="".
+
+        **NOT handled here (do not add long questions):** bulk lists or exports of **all teachers**,
+        faculty rosters, or staff directories (CSV/Excel). The portal only issues **this student's**
+        official documents. If that is what they are asking, reply in **one short sentence** and stop.
 
         Use the records tool for transcript/certificate request status (status,
         ticket_number, blocked_reason). Use the fee tool to verify payment clearance.
@@ -546,7 +552,18 @@ admin_portal_task:
         2. Then ONE clarifying line with options (announcements scope, report type, etc.).
 
         Use get_student_info for this admin's profile. Use query_announcements for active
-        notices. Give practical, neutral guidance; do not invent system-wide numbers.
+        notices.         For **how many** or **list** questions about students, teachers, courses, etc., call
+        **portal_read_query** with collection + operation=count, find, or **distinct** (set **distinct_field** e.g. `role` on
+        `users`) and optional **query_json** (Mongo filter as JSON);
+        do not say "zero" or "no data" without calling the tool. Pass actor_user_id="{student_id}" and actor_role=admin.
+        **Collection** must be the **exact** MongoDB name (e.g. `library`, `challans`, `semester_results`,
+        `student_course_teachers`, not invented names). **People vs materials:** `library` = **book/issue** rows; **`hostel`** = hostel facility/room data, not people.
+        **Library / Hostel desk staff** are in **`staff`** (filter `department` or `role`). **Non-student logins**
+        (all employees & faculty & operator accounts) are in **`users`** — use **one** count with
+        `query_json` e.g. `{{"role": {{"$ne": "student"}}}}` or **distinct** on `role`; **never** infer by adding
+        student + teacher counts or claim "no admin" without querying **`users`**. **Exam / admin / library (non-faculty)
+        employees** are in **`staff`**, not only in **`teachers`** (which is teaching faculty). On **each** new filter, call
+        **portal_read_query** again; do not repeat a previous department’s result.
     expected_output: >
         Short professional reply suitable for staff. If vague, add one
         clarifying question at the end.
@@ -562,9 +579,12 @@ superadmin_portal_task:
         Recent conversation:
         {conversation_history}
 
-        **Scope:** You have the broadest read tools plus **portal_record_update** (grade, delete submission).
-        Destructive or grading writes are audit-logged. For **grade** and **delete**, if the tool returns
-        **needs_confirmation**, ask once: "Are you sure?" and only retry with **confirmed=true** after explicit yes.
+        **Scope:** You have the broadest read tools plus **portal_record_update** (grade, delete submission) and
+        **superadmin_directory** (search / update / delete person records: students, teachers, admins, superadmins).
+        Use **superadmin_directory** when the user asks to change a name, fix a field, find someone by name or email,
+        or remove a directory row. Pass actor_user_id="{student_id}" and actor_role="superadmin". For renames,
+        operation=search first if needed, then operation=update with updates_json containing full_name (and other allowed fields).
+        Destructive directory deletes may return **needs_confirmation**; only then ask once and retry with **confirmed=true** after yes.
 
         **Other teachers’ data:** For assignment rosters or teaching load, call **query_teacher_teaching** /
         **query_teacher_submission_roster** with the **target teacher’s** id, email, or employee_id — not
@@ -573,6 +593,31 @@ superadmin_portal_task:
         **Grading / delete:** **portal_record_update** with actor_user_id="{student_id}", actor_role="superadmin",
         entity="assignment_submission", operation="grade" or "delete", lookup fields as for faculty, **confirmed**
         false first when the user has not clearly confirmed.
+
+        **Exports (CSV/TXT/PDF):** use **export_portal_data** with actor_user_id="{student_id}", actor_role=superadmin.
+        - Full directory: **export_kind=all_students_profile** (no target, no filter).
+        - One program semester: **export_kind=students_by_semester**, **filter_semester**=3 (or other).
+        - One person's grades: **export_kind=semester_grades_detail** + **target_student_id** (roll/email/id).
+
+        **Ad-hoc questions** ("kitne students CS mein", "teachers in department", "library / books", "list X where Y"):
+        use **portal_read_query** with the **real MongoDB collection** name. **Library books** → **`library`**. **Staff
+        working in the library** → **`staff`**. **Hostel staff** → **`staff`** (department Hostel), not the **`hostel`**
+        collection. **"How many users / employees where role is not student"** → **`users`**, `operation=count`,
+        `query_json` = `{{"role": {{"$ne": "student"}}}}` (or `$nin`); to list role types use `operation=distinct`,
+        `distinct_field=role` on **`users`**.         **Do not** answer by adding student count + teacher count only — many
+        accounts use roles like `library_staff`, `hostel_staff`, `superadmin`, etc. **Superadmin** can use any valid
+        collection; never invent numbers. Pass actor_user_id="{student_id}" and actor_role=superadmin.
+
+        **NEVER say "only teachers exist"** or that non-teaching staff are missing: **`teachers` is faculty only.**
+        Exam, admin, library, IT, finance, and admission people are in **`staff`** and often as **`users`** with roles
+        like `exam_staff`, `admin_staff`, `library_staff`. If the user asks "where is exam staff / other staff", call
+        **portal_read_query** on **`staff`** (and **`users`**, `distinct` on `role` if needed) — **not** `teachers` only.
+
+        **CRITICAL — follow-up messages (e.g. user said CS, then says "and in math" / "MATH"):**
+        The **Query** line above is **this turn only**. You must **call `portal_read_query` again** with a **new**
+        `query_json` matching **this** message (e.g. `{{"department": "MATH"}}` or `{{"department": {{"$regex": "^MATH$", "$options": "i"}}}}`).
+        **Never** reuse the previous turn’s count or answer as the answer for a **different** department or filter.
+        Short replies like "and in math" still require a **fresh** tool call for MATH, not CS.
 
         Answer only what was asked; be concise. Do not fabricate aggregates.
     expected_output: >

@@ -407,15 +407,15 @@ class AuthService:
 
 
 _auth_service: Optional[AuthService] = None
-
+#this is global variable that is used to store the instance of the AuthService class
 
 def get_auth_service() -> AuthService:
     """Get singleton AuthService instance."""
-    global _auth_service
-    if _auth_service is None:
+    global _auth_service #we are changing the global variable that why use this keyword
+    if _auth_service is None: #first time it will be none but when again it will be called it will be not none
         _auth_service = AuthService()
     return _auth_service
-
+# this wil return the instance of the AuthService class
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),

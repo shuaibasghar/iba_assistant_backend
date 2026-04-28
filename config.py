@@ -38,6 +38,7 @@ class Settings(BaseSettings):
 
     # LangChain Configuration
     langchain_verbose: bool = True
+    crewai_verbose: bool = False
     max_chat_history: int = 10  # Keep last N messages in context
 
     # JWT Authentication Configuration
@@ -61,6 +62,10 @@ class Settings(BaseSettings):
     # Generic file receive (e.g. POST /upload) — any type, stored locally
     upload_receive_subdir: str = "uploads/received"
     generic_upload_max_mb: int = 200
+
+    # Chat exports: CSV/TXT/PDF (relative to backend directory); signed ?token= links
+    exports_subdir: str = "uploads/exports"
+    export_download_token_expire_hours: int = 24
 
     # SMTP Email Configuration
     smtp_host: str = "smtp.gmail.com"

@@ -7,7 +7,7 @@ FastAPI endpoints for the chat service.
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 from typing import Optional, List
-
+import json
 from services.chat_service import ChatService, get_chat_service, ChatResponse
 
 # Optional: Vector store (requires langchain-chroma)
@@ -147,6 +147,11 @@ async def start_session(
     
     Session expires after 30 minutes of inactivity.
     """
+
+    # print(
+    #     "Start Session Request:\n"
+    #     + json.dumps(request.model_dump(), indent=2, ensure_ascii=False)
+    # )
     if not any([request.student_id, request.roll_number, request.email]):
         raise HTTPException(
             status_code=400,
@@ -160,13 +165,28 @@ async def start_session(
         tenant_id=request.tenant_id,
         hint_role=request.user_role,
     )
-    
+    # if session is None:
+    #     print("Start Session (service result): null")
+    # else:
+    #     print(
+    #         "Start Session (service result):\n"
+    #         + json.dumps(session.to_dict(), indent=2, ensure_ascii=False)
+    #     )
+
     if not session:
         raise HTTPException(
             status_code=404,
             detail="User not found. Use credentials registered in the portal and pass user_role (student | teacher | admin | superadmin) matching your login."
         )
     
+    role = (session.user_role or "").strip().lower()
+    if role in ("superadmin", "superuser"):
+        start_message = (
+            f"System console ready, {session.student_name}. "
+            "Org-wide and escalations are in scope; student self-service (fees, personal grades) is not."
+        )
+    else:
+        start_message = f"Welcome {session.student_name}! How can I help you today?"
     return SessionResponse(
         session_id=session.session_id,
         student_name=session.student_name,
@@ -175,7 +195,7 @@ async def start_session(
         semester=session.semester,
         department=session.department,
         user_role=session.user_role,
-        message=f"Welcome {session.student_name}! How can I help you today?"
+        message=start_message,
     )
 
 

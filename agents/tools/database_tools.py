@@ -17,6 +17,9 @@ from services.assignment_upload_service import (
     teacher_submissions_overview,
 )
 from services.portal_update_service import portal_record_update
+from services.superadmin_directory_service import run_superadmin_directory_op
+from services.portal_export_service import run_export_for_chat
+from services.portal_read_query_service import run_portal_read_query
 
 
 def get_db():
@@ -176,6 +179,100 @@ class PortalRecordUpdateInput(BaseModel):
             "For grade/delete: false first — if the tool returns needs_confirmation, ask the user yes/no; "
             "on yes, call again with true. Superadmin may omit (treated as bypass in backend)."
         ),
+    )
+
+
+class SuperadminDirectoryInput(BaseModel):
+    """Superadmin-only: search or update/delete person records (students, teachers, admins, superadmins)."""
+
+    actor_user_id: str = Field(
+        ...,
+        description="Superadmin session id (same as superadmin_portal_task student_id / context id).",
+    )
+    actor_role: str = Field("superadmin", description="Must be superadmin")
+    operation: str = Field(
+        ...,
+        description="search = list matches; update = $set whitelisted fields; delete = remove row (needs confirmed=true after user says yes)",
+    )
+    target_collection: str = Field(
+        "auto",
+        description="auto searches all directory collections, or one of: students, teachers, admins, superadmins",
+    )
+    match_full_name: str | None = Field(None, description="Exact full name match (case-insensitive), e.g. Shuaib Asghar")
+    match_email: str | None = None
+    match_roll_number: str | None = Field(None, description="Student roll number")
+    match_employee_id: str | None = Field(None, description="Staff employee_id")
+    match_document_id: str | None = Field(None, description="24-char Mongo _id when collection is unknown")
+    document_id: str | None = Field(
+        None,
+        description="Use with target_collection_for_id for direct row access (skips name search)",
+    )
+    target_collection_for_id: str | None = Field(
+        None,
+        description="Required with document_id: students | teachers | admins | superadmins",
+    )
+    updates_json: str | None = Field(
+        None,
+        description='For operation=update: JSON object of allowed fields only, e.g. {"full_name": "Shuaib Ahmed"}',
+    )
+    confirmed: bool = Field(
+        False,
+        description="For delete: set true after user confirms yes. Superadmin updates do not require this.",
+    )
+
+
+class ExportPortalDataInput(BaseModel):
+    """Build a permission-checked download file and return a signed URL (see export kinds in backend)."""
+
+    actor_user_id: str = Field(..., description="Session user id (student_id / teacher id / superadmin id from context)")
+    actor_role: str = Field(
+        ..., description="student | superadmin (other roles may be denied for a given kind)"
+    )
+    export_kind: str = Field(
+        "semester_grades_detail",
+        description=(
+            "semester_grades_detail=one student's grade rows. "
+            "all_students_profile=superadmin: full students directory. "
+            "students_by_semester=superadmin: filter by students.semester; set filter_semester (e.g. 3)"
+        ),
+    )
+    file_format: str = Field("csv", description="csv | txt | pdf")
+    target_student_id: str | None = Field(
+        None,
+        description="For semester_grades_detail: superadmin must set target. Omit for own-data student export. Not used for all_students_profile / students_by_semester.",
+    )
+    filter_semester: int | None = Field(
+        None,
+        description="For students_by_semester only: program semester number (e.g. 3 for 3rd semester).",
+    )
+
+
+class PortalReadQueryInput(BaseModel):
+    """Admin/superadmin: safe read (count/list) on a MongoDB collection using a JSON find filter."""
+
+    actor_user_id: str = Field(
+        ...,
+        description="From task context, e.g. {student_id} of the logged-in admin/superadmin",
+    )
+    actor_role: str = Field(..., description="admin or superadmin")
+    collection: str = Field(
+        ...,
+        description="Exact collection: **staff** = exam/admin/library/IT and other non-faculty employees; **teachers** = teaching faculty only; **users** = login roles. Also: library, students, challans, …",
+    )
+    operation: str = Field(
+        ...,
+        description="count = match count; find = list rows; distinct = unique values of one field (set distinct_field)",
+    )
+    query_json: str | None = Field(
+        None,
+        description='Mongo find filter, e.g. {"role": {"$ne": "student"}} on **users** for all non-student accounts. Use **$ne** / **$nin** / **$regex** as needed — do not approximate by adding separate counts. For **staff** in library/hostel: filter **staff** by department/role; library **books** = collection `library`.',
+    )
+    limit: int | None = Field(50, description="For find, max documents (capped at 200)")
+    sort_key: str | None = Field(None, description="Optional field name to sort by for find")
+    sort_dir: int = Field(1, description="1 ascending, -1 descending")
+    distinct_field: str | None = Field(
+        None,
+        description="For operation=distinct only: one field name, e.g. role (lists unique values with optional query_json).",
     )
 
 
@@ -1166,6 +1263,168 @@ class PortalRecordUpdateTool(BaseTool):
             return {"error": str(e), "permission_denied": True}
         except ValueError as e:
             return {"error": str(e)}
+
+
+class SuperadminDirectoryTool(BaseTool):
+    name: str = "superadmin_directory"
+    description: str = """
+    Superadmin only: search, update, or delete person rows in students, teachers, admins, or superadmins.
+
+    **To rename or fix a profile (e.g. Shuaib Asghar → Shuaib Ahmed):**
+    1) operation=search, match_full_name="Shuaib Asghar" (or match_email / roll / employee_id). If one match, note collection + document_id.
+    2) operation=update, same match fields **or** document_id + target_collection_for_id, updates_json: {"full_name": "Shuaib Ahmed"}.
+
+    **Whitelisted fields only** (no passwords). Unsupported fields are rejected. Deletes require confirmed=true
+    after the user says yes, unless your policy treats superadmin as already authorized (the tool will return
+    needs_confirmation until confirmed=true for delete).
+    """
+    args_schema: Type[BaseModel] = SuperadminDirectoryInput
+
+    def _run(
+        self,
+        actor_user_id: str,
+        actor_role: str = "superadmin",
+        operation: str = "",
+        target_collection: str = "auto",
+        match_full_name: str | None = None,
+        match_email: str | None = None,
+        match_roll_number: str | None = None,
+        match_employee_id: str | None = None,
+        match_document_id: str | None = None,
+        document_id: str | None = None,
+        target_collection_for_id: str | None = None,
+        updates_json: str | None = None,
+        confirmed: bool = False,
+    ) -> dict:
+        try:
+            return run_superadmin_directory_op(
+                actor_user_id=actor_user_id,
+                actor_role=actor_role,
+                operation=operation,
+                target_collection=target_collection,
+                match_full_name=match_full_name,
+                match_email=match_email,
+                match_roll_number=match_roll_number,
+                match_employee_id=match_employee_id,
+                match_document_id=match_document_id,
+                document_id=document_id,
+                target_collection_for_id=target_collection_for_id,
+                updates_json=updates_json,
+                confirmed=confirmed,
+            )
+        except PermissionError as e:
+            return {"error": str(e), "permission_denied": True}
+        except ValueError as e:
+            return {"error": str(e)}
+
+
+class ExportPortalDataTool(BaseTool):
+    name: str = "export_portal_data"
+    description: str = """
+    Generate a downloadable file (CSV, plain text, or PDF) and return a **signed, time-limited** link.
+
+    Kinds (superadmin):
+    - **all_students_profile** — one row per student, profile fields (name, email, roll, semester, dept, etc.).
+      No target_student_id. Use for "all students list CSV".
+    - **students_by_semester** — same, but only where `students.semester` == **filter_semester** (e.g. 3).
+      Set filter_semester. Use for "all third semester students".
+    - **semester_grades_detail** — one student's detailed grade table; superadmin must set **target_student_id**
+      (or student exports own: omit target).
+
+    Students: only **semester_grades_detail** (own data). On success, echo **download_url** in the reply.
+    """
+    args_schema: Type[BaseModel] = ExportPortalDataInput
+
+    def _run(
+        self,
+        actor_user_id: str,
+        actor_role: str,
+        export_kind: str = "semester_grades_detail",
+        file_format: str = "csv",
+        target_student_id: str | None = None,
+        filter_semester: int | None = None,
+    ) -> dict:
+        try:
+            return run_export_for_chat(
+                actor_user_id=actor_user_id,
+                actor_role=actor_role,
+                export_kind=export_kind,
+                file_format=file_format,
+                target_student_id=target_student_id,
+                filter_semester=filter_semester,
+            )
+        except PermissionError as e:
+            return {"error": str(e), "permission_denied": True, "success": False}
+        except ValueError as e:
+            return {"error": str(e), "success": False}
+
+
+class PortalReadQueryTool(BaseTool):
+    name: str = "portal_read_query"
+    description: str = """
+    **Admin / superadmin:** answer "how many", "list", "count", or "filter" questions against the **database**
+    using a single generic read. Pass **collection** and **operation** `count`, `find`, or `distinct`.
+
+    **CRITICAL — `teachers` is NOT all employees:** The **`teachers`** collection is **teaching faculty only** (instructors
+    in departments). **Exam staff, admin office, library desk, IT, finance, admission, and similar roles** are **not**
+    stored in `teachers`. They are in the **`staff`** collection (one document per person: `department`, `role` like
+    `exam_staff`, `admin_staff`, `library_staff`, `hostel_staff`, `finance_staff`, `admission_staff`, `it_staff`, …) and
+    their portal accounts sit in **`users`** with the same or related **`role`**. To answer "where are other staff" or
+    "exam/admin staff", you **must** call **`staff`** and/or **`users`** — never infer "only teachers exist" from
+    **`teachers` alone.**
+
+    **Collection name** must match the **MongoDB collection** in this database (e.g. `library`, `students`,
+    `challans`, `semester_results`, `student_course_teachers`, `teacher_student_relations`, `chat_logs`, `users` — not
+    made-up names like `library_system`). **Superadmin**: any valid identifier. **Admin**: same collections as in
+    Compass (allowlist in backend `READ_COLLECTIONS_ADMIN`).
+
+    **query_json** — Mongo find filter, e.g.:
+    - **Users whose role is not `student`:** `collection=users`, `operation=count`, `query_json={"role": {"$ne": "student"}}` — **never** sum separate student/teacher counts; staff use roles like `library_staff`, `hostel_staff`, `admin_staff`, and `superadmin` may exist — always use one **users** query or **operation=distinct** + **distinct_field=role** to see all roles.
+    - CS students: `{"department": "CS"}` or regex on `department`
+    - MATH: use the **latest** user message, not a previous department
+    - **All support / non-faculty employees (exam, admin, library, etc.):** collection **`staff`** (count with `{}` or
+    find; filter e.g. `{{"role": "exam_staff"}}` or `{{"department": "Examination"}}` as your data has it). If unsure,
+    also **`users`** with **`distinct_field=role`** to see which non-`student` / non-`teacher` roles exist.
+    - **Hostel / library desk (people):** **`staff`**, same as above — **not** the `hostel` or `library` collections.
+    - **Library books and issue records:** collection **`library`**
+    - **Teaching faculty only:** `teachers` — do **not** use this for exam/admin/library/IT staff questions.
+
+    **Every time** the user changes department, role, or filter (including short follow-ups like "and in math"),
+    call this tool **again** with updated `query_json`. Do **not** repeat a previous tool result for a new question.
+
+    **count** returns a number; **find** returns rows; **distinct** + **distinct_field** returns unique values (e.g. all
+    `role` values in `users`). Do not guess counts—call this tool.
+    """
+    args_schema: Type[BaseModel] = PortalReadQueryInput
+
+    def _run(
+        self,
+        actor_user_id: str,
+        actor_role: str,
+        collection: str,
+        operation: str,
+        query_json: str | None = None,
+        limit: int | None = 50,
+        sort_key: str | None = None,
+        sort_dir: int = 1,
+        distinct_field: str | None = None,
+    ) -> dict:
+        try:
+            return run_portal_read_query(
+                actor_user_id=actor_user_id,
+                actor_role=actor_role,
+                collection=collection,
+                operation=operation,
+                query_json=query_json,
+                limit=limit,
+                sort_key=sort_key,
+                sort_dir=sort_dir,
+                distinct_field=distinct_field,
+            )
+        except PermissionError as e:
+            return {"error": str(e), "ok": False, "permission_denied": True}
+        except ValueError as e:
+            return {"error": str(e), "ok": False}
 
 
 class AnnouncementQueryTool(BaseTool):

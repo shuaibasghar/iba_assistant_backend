@@ -77,6 +77,21 @@ async def lifespan(app: FastAPI):
         )
         raise
     log.info("Data stores ready: MongoDB + Redis")
+    
+    # Phase 1: Initialize Schema Catalog
+    from services.schema_catalog import initialize_schema_catalog
+    try:
+        await initialize_schema_catalog()
+    except Exception as e:
+        print(f"[startup] WARNING: Schema catalog initialization failed: {e!s}", flush=True)
+    
+    # Phase 2: Initialize Schema Embeddings (ChromaDB)
+    from services.schema_embeddings import initialize_schema_embeddings, schema_embedder
+    try:
+        from services.schema_catalog import schema_catalog
+        await initialize_schema_embeddings(schema_catalog)
+    except Exception as e:
+        print(f"[startup] WARNING: Schema embeddings initialization failed: {e!s}", flush=True)
     print(
         "[startup] OK — database="
         f"{settings.mongodb_database!r} at {_display_mongo_target(settings.mongodb_url)} | Redis OK",
@@ -152,6 +167,7 @@ app.add_middleware(
 # Include routers
 app.include_router(auth_router)
 app.include_router(chat_router)
+app.include_router(system_router)
 app.include_router(report_router)
 app.include_router(assignments_router)
 app.include_router(upload_router)

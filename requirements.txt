@@ -11,6 +11,7 @@ numpy
 pandas
 ipython
 pypdf
+sentence-transformers
 # FastAPI and web framework dependencies
 fastapi
 requests

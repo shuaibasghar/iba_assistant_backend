@@ -19,7 +19,11 @@ from langchain_core.output_parsers import StrOutputParser
 from config import get_settings
 from .session_manager import SessionManager, StudentSession, get_session_manager
 from .conversation_manager import ConversationManager, ConversationManagerFactory
-from agents.university_crew import UniversityCrewFactory, _CREW_ROUTE_INTENTS
+from agents.university_crew import (
+    UniversityCrewFactory,
+    _CREW_ROUTE_INTENTS,
+    _ROLE_PORTAL_INTENTS,
+)
 from utils.query_scope import detect_assignment_reply_scope, detect_grade_reply_scope
 from utils.permissions import check_user_permission
 
@@ -45,14 +49,17 @@ class ChatResponse:
         }
 
 
+_ROLE_PORTAL_INTENTS_SET = frozenset(_ROLE_PORTAL_INTENTS)
+
+
 class IntentClassifier:
     """
     Lightweight intent classifier using LangChain.
     Faster than using full CrewAI for simple classification.
     """
     
-    # Order: route intents first (same as crew router), GENERAL last.
-    INTENTS = list(_CREW_ROUTE_INTENTS) + ["GENERAL"]
+    # Parse order: domain intents, then role-portal (SUPERADMIN before ADMIN), then GENERAL.
+    INTENTS = list(_CREW_ROUTE_INTENTS) + list(_ROLE_PORTAL_INTENTS) + ["GENERAL"]
     
     def __init__(self):
         settings = get_settings()
@@ -66,8 +73,10 @@ class IntentClassifier:
         )
         
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an intent classifier for a university portal (students and faculty).
-Classify the user's query into ONE of these categories:
+            ("system", """You are an intent classifier for a university portal (students, faculty, and staff).
+Classify the user's query into ONE of these categories.
+
+Domain (pick when the message clearly fits — applies to any role):
 - ASSIGNMENT: Assignments, homework, submissions, course PDFs/handouts, class file or link requests (not transcripts)
 - FEE: Fees, payment, dues, challan
 - EXAM: Exams, schedule, papers, dates, venues, admit card, hall ticket
@@ -81,7 +90,15 @@ Classify the user's query into ONE of these categories:
 - COMPLAINT: Complaints, support tickets, grievances
 - ANNOUNCEMENT: Campus notices, circulars, news, alerts
 - EMAIL: Sending an email, forwarding to an address, Gmail/mail requests
-- GENERAL: Greetings, small talk, unclear intent
+
+Role-specific portal (ONLY if Role matches — otherwise never output these):
+- TEACHER: Role is teacher/faculty AND the message is general faculty-portal / teaching workflow (rosters, my classes, submissions overview) that does NOT clearly match a domain label above; teachers asking "my last assignment" or class assignments MUST use ASSIGNMENT not TEACHER.
+- ADMIN: Role is admin AND the message is general department admin portal work without one clear domain (records, reports, notices) that does NOT clearly match a domain above.
+- SUPERADMIN: Role is superadmin or superuser AND the message is cross-portal, directory, exports, or platform-wide admin not reduced to one domain above.
+
+GENERAL: Greetings, small talk, unclear intent, or student/surface queries that fit no better label.
+
+Rules: Prefer the most specific domain when in doubt. Respect Role for TEACHER/ADMIN/SUPERADMIN only.
 
 Respond with ONLY the category name, nothing else.
 
@@ -119,13 +136,20 @@ Recent conversation:
             result = result.strip().upper()
             for intent in self.INTENTS:
                 if intent in result:
-                    return intent
+                    return self._clamp_intent_for_role(intent, student_context.get("user_role", "student"))
             
-            return "GENERAL"
+            return self._clamp_intent_for_role("GENERAL", student_context.get("user_role", "student"))
         
         except Exception as e:
             print(f"Intent classification error: {e}")
+            return self._clamp_intent_for_role("GENERAL", student_context.get("user_role", "student"))
+
+    @staticmethod
+    def _clamp_intent_for_role(intent: str, user_role: str) -> str:
+        """Students cannot be routed to faculty/admin-only portal crews."""
+        if (user_role or "student").lower() == "student" and intent in _ROLE_PORTAL_INTENTS_SET:
             return "GENERAL"
+        return intent
 
 
 class ChatService:
@@ -227,6 +251,7 @@ class ChatService:
             session=session
         )
         conversation_history = conv_manager.get_conversation_context()
+        # student_context is the context of the user who is chatting
         student_context = session.get_context()
 
         # 2.5 Permission layer: deny sensitive requests immediately
@@ -245,20 +270,12 @@ class ChatService:
                 processing_time_ms=processing_time
             )
 
-        # 3. Intent: role-specific crew (faculty/admin) vs classifier for students
-        ur = student_context.get("user_role", "student")
-        if ur == "teacher":
-            intent = "TEACHER"
-        elif ur == "admin":
-            intent = "ADMIN"
-        elif ur in ("superadmin", "superuser"):
-            intent = "SUPERADMIN"
-        else:
-            intent = self.intent_classifier.classify(
-                query=message,
-                student_context=student_context,
-                conversation_history=conversation_history
-            )
+        # 3. Intent from LLM for all roles (student role-portal labels clamped to GENERAL inside classifier)
+        intent = self.intent_classifier.classify(
+            query=message,
+            student_context=student_context,
+            conversation_history=conversation_history,
+        )
 
         # Narrow reply scope (assignments / grades) — injected into Crew task text so the model obeys it
         crew_context = dict(student_context)

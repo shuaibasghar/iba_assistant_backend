@@ -65,6 +65,9 @@ _CREW_ROUTE_INTENTS = (
     "EMAIL",
 )
 
+# Portal-role crews (substring parse order: longest token first — "ADMIN" matches inside "SUPERADMIN")
+_ROLE_PORTAL_INTENTS = ("SUPERADMIN", "ADMIN", "TEACHER")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION LOADER

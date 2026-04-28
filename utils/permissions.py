@@ -88,7 +88,7 @@ ROLE_PERMISSION_RULES: List[RolePermissionRule] = [
         denied_patterns=COMMON_DENIED_PATTERNS,
         deny_message=(
             "You are not authorized to access that information. "
-            "Please contact the administration office for sensitive personnel or financial details."
+            "Please contact the administration office for sensitive personnel."
         ),
     ),
     RolePermissionRule(
@@ -113,7 +113,7 @@ ROLE_PERMISSION_RULES: List[RolePermissionRule] = [
         ],
         denied_patterns=COMMON_DENIED_PATTERNS,
         deny_message=(
-            "That request is restricted. You are not authorized to retrieve personal or salary information. "
+            "That request is restricted. You are not authorized. "
             "Please use official HR channels or contact administration."
         ),
     ),

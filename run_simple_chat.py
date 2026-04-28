@@ -39,6 +39,10 @@ print("\n🔄 Loading modules...")
 
 from pymongo import MongoClient
 from config import get_settings
+from utils.agentops_setup import init_agentops
+
+init_agentops()
+
 from crewai import Agent, Task, Crew, Process
 
 from agents.tools.database_tools import (

@@ -12,11 +12,14 @@ from typing import Optional
 from datetime import datetime
 from dataclasses import dataclass
 
+from config import get_settings
+from utils.agentops_setup import init_agentops
+
+init_agentops()
+
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
-
-from config import get_settings
 from .session_manager import SessionManager, StudentSession, get_session_manager
 from .conversation_manager import ConversationManager, ConversationManagerFactory
 from agents.university_crew import (

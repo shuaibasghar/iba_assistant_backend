@@ -1,6 +1,7 @@
 
 crewai
 crewai-tools
+agentops
 langchain
 langchain_community
 redis

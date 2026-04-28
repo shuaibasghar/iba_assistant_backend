@@ -28,6 +28,9 @@ from pymongo import MongoClient
 from bson import ObjectId
 
 from config import get_settings
+from utils.agentops_setup import init_agentops
+
+init_agentops()
 from services.email_service import send_bulk_email, is_configured as smtp_is_configured
 
 log = logging.getLogger(__name__)

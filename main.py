@@ -8,6 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from utils.db import mongodb_connector
 from config import get_settings, get_backend_dir
+from utils.agentops_setup import init_agentops
+
+init_agentops()
+
 from routers.chat import router as chat_router
 from routers.auth import router as auth_router
 from routers.report import router as report_router

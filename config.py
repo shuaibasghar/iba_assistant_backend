@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
 
+    # AgentOps (https://agentops.ai) — optional tracing for CrewAI / LangChain
+    agentops_api_key: str = ""
+    # Long-lived servers: if sessions close too early per request, try True (see AgentOps docs).
+    agentops_skip_auto_end_session: bool = False
+
     # CrewAI Plus (optional) — used by CrewaiPlatformTools e.g. Gmail send_email
     crewai_platform_integration_token: str = ""
     crewai_email_apps: str = "gmail"

@@ -13,10 +13,16 @@ Benefits:
     - Easy to add new agents without code changes
 """
 
-from crewai import Agent, Task, Crew, Process
 from pathlib import Path
 from typing import Any
 import yaml
+
+from config import get_settings
+from utils.agentops_setup import init_agentops
+
+init_agentops()
+
+from crewai import Agent, Task, Crew, Process
 
 from .tools.database_tools import (
     AdmitCardQueryTool,
@@ -44,7 +50,6 @@ from .tools.database_tools import (
 )
 from utils.query_scope import assignment_scope_prompt, grade_scope_prompt
 from .tools.platform_email_tools import get_platform_email_tools
-from config import get_settings
 
 settings = get_settings()
 

@@ -36,7 +36,7 @@ from services.pdf_assignment_extract import _extract_pdf_text
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/whatsapp", tags=["WhatsApp"])
+router = APIRouter(prefix="/api/whatsapp", tags=["WhatsApp"])
 
 
 def _whatsapp_download_base() -> str:

@@ -26,7 +26,7 @@ from services.auth import (
 )
 
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
 
 class LoginRequest(BaseModel):

@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 
 from services.portal_export_service import get_exports_dir, verify_export_download_token
 
-router = APIRouter(prefix="/exports", tags=["Exports"])
+router = APIRouter(prefix="/api/exports", tags=["Exports"])
 
 
 @router.get("/download")

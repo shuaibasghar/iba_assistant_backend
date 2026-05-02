@@ -11,7 +11,7 @@ from services.auth import StudentAuth, get_current_student
 from services.student_report_pdf import build_student_report_pdf_bytes
 from services.student_report_service import build_student_report
 
-router = APIRouter(prefix="/report", tags=["Report"])
+router = APIRouter(prefix="/api/report", tags=["Report"])
 
 
 def _safe_filename_part(value: str) -> str:

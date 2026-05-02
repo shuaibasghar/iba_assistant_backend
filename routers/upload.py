@@ -9,7 +9,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from config import get_backend_dir, get_settings
 
-router = APIRouter(tags=["Upload"])
+router = APIRouter(prefix="/api", tags=["Upload"])
 
 
 @router.post("/upload")

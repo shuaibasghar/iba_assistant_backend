@@ -19,7 +19,7 @@ except ImportError:
     get_vector_store_manager = None
 
 
-router = APIRouter(prefix="/chat", tags=["Chat"])
+router = APIRouter(prefix="/api/chat", tags=["Chat"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -27,7 +27,7 @@ from services import assignment_upload_service as asvc
 from services.portal_update_service import portal_record_update
 from services.pdf_assignment_extract import analyze_assignment_pdf
 
-router = APIRouter(prefix="/assignments", tags=["Assignments"])
+router = APIRouter(prefix="/api/assignments", tags=["Assignments"])
 _log = logging.getLogger(__name__)
 
 

@@ -138,7 +138,7 @@ print(f"   ✅  {len(courses_raw)} courses.\n")
 print("👨‍🏫  Seeding teachers...")
 teachers_raw = [
     # CS teachers
-    ("Dr. Ghulam Mujtaba Shaikh","gmshaikn","Prof123!","CS","Professor","HOD","CS301,CS302"),
+    ("Dr. sher","sher","Prof123!","CS","Professor","HOD","CS301,CS302"),
     ("Dr. Sadia Anwar",          "sanwar",  "Prof123!","CS","Assoc. Prof","","CS303,CS304"),
     ("Dr. Imran Ali Shah",       "ishah",   "Prof123!","CS","Asst. Prof","","CS201,CS202"),
     ("Ms. Nadia Qureshi",        "nqureshi","Prof123!","CS","Lecturer","","CS101,CS102"),
@@ -350,6 +350,84 @@ for dept, count in dept_student_count.items():
             }
             student_list_for_dept.append((sid,uid,un,full,dept,sem,fee_status,roll))
             all_students.append((sid,uid,un,full,dept,sem,fee_status,roll))
+
+# Add requested CS students explicitly
+manual_students = [
+    {
+        "full_name": "Shuaib Asghar",
+        "email": "shuaibasghargtk@gmail.com",
+        "phone": "03007016824",
+        "gender": "Male",
+        "username": "shuaib_asghar"
+    },
+    {
+        "full_name": "Saiqa Channa",
+        "email": "saiqa@iba-suk.edu.pk",
+        "phone": "03058197347",
+        "gender": "Female",
+        "username": "saiqa_channa"
+    },
+    {
+        "full_name": "Ghulam Sugra",
+        "email": "ghulamsughra.mscss26@iba-suk.edu.pk",
+        "phone": f"030{random.randint(10000000,99999999)}",
+        "gender": "Female",
+        "username": "ghulam_sugra"
+    },
+    {
+        "full_name": "Muhammad Ibraheem",
+        "email": "muhammadibraheem.msai@iba-suk.edu.pk",
+        "phone": f"030{random.randint(10000000,99999999)}",
+        "gender": "Male",
+        "username": "muhammad_ibraheem"
+    },
+]
+for student in manual_students:
+    n = counter["CS"]
+    counter["CS"] += 1
+    roll = adm_no("CS", batch_map.get(1,"2024"), n)
+    uid = db["users"].insert_one({
+        "username": student["username"],
+        "email": student["email"],
+        "password_hash": hp("Student@123"),
+        "role": "student",
+        "is_active": True,
+        "created_at": ago(random.randint(200,600)),
+        "last_login": ago(random.randint(0,7)),
+        "university": UNI_NAME
+    }).inserted_id
+    fee_status = "paid"
+    sid = db["students"].insert_one({
+        "user_id": uid,
+        "full_name": student["full_name"],
+        "roll_number": roll,
+        "email": student["email"],
+        "department": "CS",
+        "semester": 1,
+        "batch": batch_map.get(1,"2024"),
+        "dob": datetime(random.randint(2000,2004),random.randint(1,12),random.randint(1,28)),
+        "phone": student["phone"],
+        "address": "House 12 Sukkur",
+        "gender": student["gender"],
+        "religion": "Islam",
+        "current_fee_status": fee_status,
+        "cgpa": round(random.uniform(2.5,3.5),2),
+        "status": "active",
+        "hostel": False,
+        "university": UNI_NAME,
+        "created_at": ago(random.randint(200,600))
+    }).inserted_id
+    db["users"].update_one({"_id": uid}, {"$set": {"student_id": sid}})
+    student_ids[student["username"]] = sid
+    student_profiles[str(sid)] = {
+        "username": student["username"],
+        "full_name": student["full_name"],
+        "department": "CS",
+        "semester": 1,
+        "fee_status": fee_status,
+        "uid": uid
+    }
+    all_students.append((sid,uid,student["username"],student["full_name"],"CS",1,fee_status,roll))
 
 print(f"   ✅  {len(all_students)} students.\n")
 

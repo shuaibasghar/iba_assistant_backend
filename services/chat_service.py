@@ -270,14 +270,12 @@ class ChatService:
                 processing_time_ms=processing_time
             )
 
-        # 3. Intent from LLM for all roles (student role-portal labels clamped to GENERAL inside classifier)
         intent = self.intent_classifier.classify(
             query=message,
             student_context=student_context,
             conversation_history=conversation_history,
         )
 
-        # Narrow reply scope (assignments / grades) — injected into Crew task text so the model obeys it
         crew_context = dict(student_context)
         if intent == "ASSIGNMENT":
             crew_context["assignment_reply_scope"] = detect_assignment_reply_scope(message)
